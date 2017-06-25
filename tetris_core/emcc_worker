@@ -1,0 +1,2 @@
+mkdir -p ../target/www && \
+emcc "-o" "../target/www/tetriscore.js" "-s" "BUILD_AS_WORKER=1" $@
