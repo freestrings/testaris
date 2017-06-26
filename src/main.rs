@@ -1,5 +1,6 @@
 extern crate emscripten_sys as asm;
 extern crate sdl2;
+extern crate libc;
 
 use std::ptr;
 use std::os::raw::{c_char, c_int, c_void};
@@ -61,14 +62,20 @@ extern "C" fn main_loop_callback(arg: *mut c_void) {
 
 extern "C" fn em_worker_callback_func(data: *mut c_char, size: c_int, user_args: *mut c_void) {
     // 1.
-    let msg = unsafe { std::ffi::CString::from_raw(data) };
-    let bytes = msg.into_string();
-    println!("{:?}", bytes);
+    // let msg = unsafe { std::ffi::CString::from_raw(data) };
+    // let bytes = msg.into_string();
+    // println!("{:?}", bytes);
+    // mem::forget(bytes);
 
     // 2.
     // let msg = unsafe { std::ffi::CString::from_raw(data) };
     // let bytes = msg.into_bytes();
     // println!("{:?}", bytes);
+}
+
+#[derive(Debug)]
+struct Msg {
+    data: Vec<u8>
 }
 
 struct App<'a> {
@@ -131,20 +138,28 @@ impl<'a> App<'a> {
         let events = self.events();
 
         if events.len() > 0 {
-            let events: Vec<u8> = events.iter().map(|e| *e).collect();
-            let len = events.len() as i32;
-            let send_value = unsafe { std::ffi::CString::from_vec_unchecked(events) };
-            let send_value_ptr = send_value.into_raw();
+            // let events: Vec<u8> = events.iter().map(|e| *e).collect();
+            // let len = events.len() as i32;
+            
+            // let send_value = unsafe { std::ffi::CString::from_vec_unchecked(events) };
+            // let send_value_ptr = send_value.into_raw();
 
             let worker_func_name = CString::new("post_event").unwrap();
             let worker_func_name_ptr = worker_func_name.as_ptr();
+
+            let mut s = String::from("cc");
+            // let len = s.len() as i32;
+            // let mut s = Box::new(s);
+            let s = CString::new(s).unwrap();
+            let s = s.into_raw();
+            // let s = &mut s as *mut _ as *mut c_char;
 
             unsafe {
                 asm::emscripten_call_worker(
                     self.worker_handle,
                     worker_func_name_ptr,
-                    send_value_ptr,
-                    len,
+                    s,
+                    libc::strlen(s) as i32,
                     Some(em_worker_callback_func),
                     ptr::null_mut(),
                 );

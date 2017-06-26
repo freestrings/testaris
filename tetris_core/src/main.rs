@@ -2,6 +2,8 @@ extern crate emscripten_sys as asm;
 #[macro_use]
 extern crate lazy_static;
 extern crate rand;
+extern crate time;
+extern crate libc;
 
 use std::collections::HashSet;
 use std::f32::consts::PI;
@@ -9,6 +11,8 @@ use std::ffi::CString;
 use std::mem;
 use std::sync::Mutex;
 use std::os::raw::{c_char, c_int};
+
+use std::slice;
 
 use rand::distributions::{IndependentSample, Range};
 
@@ -63,10 +67,10 @@ trait ToData {
     fn to_data(&self) -> *mut c_char;
 }
 
-lazy_static!{
-    static ref blockObj: Mutex<Block> = Mutex::new(Block::new(BlockType::random()));
-    static ref gridObj: Mutex<Grid> = Mutex::new(Grid::new());
-}
+// lazy_static!{
+//     static ref blockObj: Mutex<Block> = Mutex::new(Block::new(BlockType::random()));
+//     static ref gridObj: Mutex<Grid> = Mutex::new(Grid::new());
+// }
 
 
 #[derive(PartialEq, Eq, Hash)]
@@ -103,60 +107,130 @@ impl BlockEvent {
     }
 }
 
+use std::borrow::BorrowMut;
+
+#[derive(Debug)]
+struct Msg {
+    data: Vec<u8>,
+}
+
+fn _print<T>(msg: T) {
+    unsafe {
+        asm::emscripten_log(asm::EM_LOG_CONSOLE as i32, msg);
+    }
+}
+
 #[no_mangle]
 pub fn post_event(data: *mut c_char, size: c_int) {
-    unsafe { asm::emscripten_log(asm::EM_LOG_ERROR as i32, "in post_event"); }
 
-    let mut block = blockObj.lock().unwrap();
-    let grid = gridObj.lock().unwrap();
-    let events = unsafe { CString::from_raw(data) };
-    let bytes = events.into_bytes();
+    _print("<<\0");
+    _print(format!("{}\0", size as i32));
 
-    for byte in bytes {
-        let event = BlockEvent::from_event(byte);
-        match event {
-            BlockEvent::Rotate => {
-                if block.type_ref() != &BlockType::O {
-                    block.rotate();
-                }
-            }
-            BlockEvent::Left => block.move_left(|points| grid.is_empty(points)),
-            BlockEvent::Right => block.move_right(|points| grid.is_empty(points)),
-            BlockEvent::Down => block.move_down(|points| grid.is_empty(points)),
-            BlockEvent::Drop => block.drop_down(|points| grid.is_empty(points)),
-            _ => (),
-        };
-
-        let range = block.range();
-        block.check_left_bound(&range);
-        block.check_right_bound(&range);
-        block.check_bottom_bound(&range);
+    // let len = libc::strlen(data) + 1; // Including the NUL byte
+    let slice = unsafe { slice::from_raw_parts(data, size as usize) };
+    let s: &[u8] = unsafe { mem::transmute(slice) };
+    _print(format!("{:?}\0", s));
+    
+    let ss = unsafe { CString::from_vec_unchecked(s.to_vec()) };
+    
+    // let mut s: &mut Vec<u8> = unsafe { mem::transmute(data) };
+    // let ss = unsafe { CString::from_vec_unchecked(s.to_vec()) };
+    // let s1 = unsafe { CString::from_raw(data) };
+    if let Ok(s) = ss.into_string() {
+        _print(format!("{:?}\0", s));
     }
+    // _print(">>\0");
 
-    let points = block.get_points_ref();
-    let msg = points.iter().fold(String::new(), |acc, point| {
-        let point_str = format!("{}:{}", point.x(), point.y());
-        acc + point_str.as_str()
-    });
 
-    let len = msg.len() as i32;
-    let msg = std::ffi::CString::new(msg).unwrap();
-    let msg_ptr = msg.into_raw();
+    // let s = s.into_string().unwrap();
+    
+    // let mut block = blockObj.lock().unwrap();
+    // let grid = gridObj.lock().unwrap();
+    // let events = unsafe { CString::from_raw(data) };
+    // let bytes = events.into_bytes();
 
-    unsafe {
-        asm::emscripten_worker_respond(msg_ptr, len + 1);
-    }
-    mem::forget(msg_ptr);
+    // for byte in bytes.clone() {
+    //     let event = BlockEvent::from_event(byte);
+    //     match event {
+    //         BlockEvent::Rotate => {
+    //             if block.type_ref() != &BlockType::O {
+    //                 block.rotate();
+    //             }
+    //         }
+    //         BlockEvent::Left => block.move_left(|points| grid.is_empty(points)),
+    //         BlockEvent::Right => block.move_right(|points| grid.is_empty(points)),
+    //         BlockEvent::Down => block.move_down(|points| grid.is_empty(points)),
+    //         BlockEvent::Drop => block.drop_down(|points| grid.is_empty(points)),
+    //         _ => (),
+    //     };
+
+    //     let range = block.range();
+    //     block.check_left_bound(&range);
+    //     block.check_right_bound(&range);
+    //     block.check_bottom_bound(&range);
+    // }
+
+    // unsafe {
+    //     asm::emscripten_log(asm::EM_LOG_ERROR as i32, "#2\n");
+    // }
+
+    // let mut msg = block.get_points_ref().iter().fold(
+    //     String::new(),
+    //     |acc, point| {
+    //         let point_string = format!("({},{})", point.x(), point.y());
+    //         let point_str = point_string.as_str();
+    //         acc + point_str
+    //     },
+    // );
+
+    // unsafe {
+    //     asm::emscripten_log(asm::EM_LOG_ERROR as i32, "#3\n");
+    // }
+
+    // unsafe {
+    //     asm::emscripten_log(asm::EM_LOG_ERROR as i32, "#3-1: %d\n", bytes.len());
+    // }
+
+    // let mut points = bytes;
+    // points.clear();
+    // // if msg.len() > points.len() {
+    //     points.append(&mut msg.into_bytes());
+    // // } else {
+    // //     points.append(&mut msg.into_bytes());
+    // //     points.shrink_to_fit();
+    // // }
+    // points.shrink_to_fit();
+
+    // unsafe {
+    //     asm::emscripten_log(asm::EM_LOG_ERROR as i32, "#4\n");
+    // }
+
+    // unsafe {
+    //     asm::emscripten_log(asm::EM_LOG_ERROR as i32, "#4-1: %d\n", points.len());
+    // }
+
+    // let len = points.len() as i32;
+    // let send_back_value = unsafe { CString::from_vec_unchecked(points) };
+    // let send_back_value_ptr = send_back_value.into_raw();
+
+    // unsafe {
+    //     asm::emscripten_log(asm::EM_LOG_ERROR as i32, "#5\n");
+    // }
+
+    // unsafe {
+    //     asm::emscripten_worker_respond(send_back_value_ptr, len + 1);
+    // }
 
     // 2.
     // let len = points.len() as i32;
     // let send_back_value = unsafe { std::ffi::CString::from_vec_unchecked(points) };
     // let send_back_value_ptr = send_back_value.into_raw();
     // unsafe {
-    //     asm::emscripten_worker_respond(send_back_value_ptr, size);
+    //     asm::emscripten_worker_respond(send_back_value_ptr, len);
     // }
 }
 
+#[derive(Debug)]
 struct Point {
     x: i32,
     y: i32,
@@ -176,6 +250,7 @@ impl Point {
     }
 }
 
+#[derive(Debug)]
 struct Rect {
     x: i32,
     y: i32,
