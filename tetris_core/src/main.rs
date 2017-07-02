@@ -2,287 +2,150 @@ extern crate emscripten_sys as asm;
 #[macro_use]
 extern crate lazy_static;
 extern crate rand;
-extern crate time;
 extern crate libc;
+extern crate tetris_struct;
 
-use std::collections::HashSet;
 use std::f32::consts::PI;
 use std::ffi::CString;
 use std::mem;
 use std::sync::Mutex;
 use std::os::raw::{c_char, c_int};
+use std::cell::RefCell;
 
 use std::slice;
+
+use tetris_struct::*;
 
 use rand::distributions::{IndependentSample, Range};
 
 fn main() {}
 
-//
-//    #
-// #, @, #
-const BLOCK_T: &[(u8, u8)] = &[(1, 0), (0, 1), (1, 1), (2, 1)];
-//
-// #
-// #, @, #
-const BLOCK_J: &[(u8, u8)] = &[(0, 0), (0, 1), (1, 1), (2, 1)];
-//
-//       #
-// #, @, #
-const BLOCK_L: &[(u8, u8)] = &[(2, 0), (2, 1), (1, 1), (0, 1)];
-//
-//    #, #
-// #, @
-const BLOCK_S: &[(u8, u8)] = &[(2, 0), (1, 0), (1, 1), (0, 1)];
-//
-// #, #
-//    @, #
-const BLOCK_Z: &[(u8, u8)] = &[(0, 0), (1, 0), (1, 1), (2, 1)];
-//
-// #, #
-// #, #
-const BLOCK_O: &[(u8, u8)] = &[(0, 0), (1, 0), (0, 1), (1, 1)];
-//
-// #, #, @, #
-const BLOCK_I: &[(u8, u8)] = &[(0, 0), (1, 0), (2, 0), (3, 0)];
-
-const COLUMNS: u32 = 10;
-const ROWS: u32 = 20;
-
-const COLOR_PURPLE: (u8, u8, u8) = (128, 0, 128);
-const COLOR_BLUE: (u8, u8, u8) = (0, 0, 255);
-const COLOR_ORANGE: (u8, u8, u8) = (255, 165, 0);
-const COLOR_LIME: (u8, u8, u8) = (128, 255, 0);
-const COLOR_RED: (u8, u8, u8) = (255, 0, 0);
-const COLOR_YELLOW: (u8, u8, u8) = (255, 255, 0);
-const COLOR_CYAN: (u8, u8, u8) = (0, 255, 255);
-const COLOR_BLACK: (u8, u8, u8) = (0, 0, 0);
-
-const DEFAULT_GRAVITY: u8 = 20;
-
 type Points = Vec<Point>;
 type Color = (u8, u8, u8);
 
-trait ToData {
-    fn to_data(&self) -> *mut c_char;
+// 웹 워커당 하나씩 있기 때문에 스레드 세이프하지만,
+// 전역으로 Block, Grid 상태를 유지 할 방법이 없다.
+lazy_static!{
+    static ref BLOCK_OBJ: Mutex<Block> = Mutex::new(Block::new(BlockType::random()));
+    static ref GRID_OBJ: Mutex<Grid> = Mutex::new(Grid::new());
+    static ref ID: Mutex<RefCell<i8>> = Mutex::new(RefCell::new(-1));
 }
 
-// lazy_static!{
-//     static ref blockObj: Mutex<Block> = Mutex::new(Block::new(BlockType::random()));
-//     static ref gridObj: Mutex<Grid> = Mutex::new(Grid::new());
-// }
+mod log {
+    use super::asm;
 
-
-#[derive(PartialEq, Eq, Hash)]
-enum BlockEvent {
-    Left,
-    Right,
-    Down,
-    Drop,
-    Rotate,
-    None,
-}
-
-impl BlockEvent {
-    fn from_event(evt: u8) -> BlockEvent {
-        match evt {
-            1 => BlockEvent::Left,
-            2 => BlockEvent::Right,
-            3 => BlockEvent::Down,
-            4 => BlockEvent::Drop,
-            5 => BlockEvent::Rotate,
-            _ => BlockEvent::None,
-        }
+    pub fn debug<T>(msg: T) {
+        // unsafe {
+        //     asm::emscripten_log(asm::EM_LOG_CONSOLE as i32, msg);
+        // }
     }
 
-    fn to_block_event(&self) -> u8 {
-        match *self {
-            BlockEvent::Left => 1,
-            BlockEvent::Right => 2,
-            BlockEvent::Down => 3,
-            BlockEvent::Drop => 4,
-            BlockEvent::Rotate => 5,
-            _ => 6,
+    pub fn error<T>(msg: T) {
+        unsafe {
+            asm::emscripten_log(asm::EM_LOG_ERROR as i32, msg);
         }
     }
 }
 
-use std::borrow::BorrowMut;
+fn send_back(msg: Msg) {
+    match msg.to_json() {
+        Ok(json) => {
+            // log::debug(format!("{:?}\0", json));
 
-#[derive(Debug)]
-struct Msg {
-    data: Vec<u8>,
+            let send_back = CString::new(json).unwrap();
+            let send_back_ptr = send_back.into_raw();
+            let len = unsafe { libc::strlen(send_back_ptr) as i32 };
+
+            unsafe {
+                asm::emscripten_worker_respond(send_back_ptr, len + 1);
+            }
+        }
+        Err(_) => {
+            log::error(format!("Error\0"));
+        }
+    }
 }
 
-fn _print<T>(msg: T) {
-    unsafe {
-        asm::emscripten_log(asm::EM_LOG_CONSOLE as i32, msg);
+#[no_mangle]
+pub fn init_event(data: *mut c_char, size: c_int) {
+
+    let init_id: &[u8] = unsafe {
+        let slice = slice::from_raw_parts(data, size as usize);
+        mem::transmute(slice)
+    };
+
+    log::debug(format!("init id: {}\0", init_id[0]));
+
+    let init_id = init_id[0];
+    let mut id_ref = ID.lock().unwrap();
+
+    if *id_ref.borrow() != -1 {
+        return;
     }
+
+    *id_ref.get_mut() = init_id as i8;
+
+    let msg = Msg::new(
+        *id_ref.borrow() as u8,
+        vec![],
+        [[0_u8; COLUMNS as usize]; ROWS as usize],
+    );
+
+    send_back(msg);
 }
 
 #[no_mangle]
 pub fn post_event(data: *mut c_char, size: c_int) {
 
-    _print("<<\0");
-    _print(format!("{}\0", size as i32));
+    let id_ref = ID.lock().unwrap();
+    let id_val = *id_ref.borrow();
 
-    // let len = libc::strlen(data) + 1; // Including the NUL byte
-    let slice = unsafe { slice::from_raw_parts(data, size as usize) };
-    let s: &[u8] = unsafe { mem::transmute(slice) };
-    _print(format!("{:?}\0", s));
-    
-    let ss = unsafe { CString::from_vec_unchecked(s.to_vec()) };
-    
-    // let mut s: &mut Vec<u8> = unsafe { mem::transmute(data) };
-    // let ss = unsafe { CString::from_vec_unchecked(s.to_vec()) };
-    // let s1 = unsafe { CString::from_raw(data) };
-    if let Ok(s) = ss.into_string() {
-        _print(format!("{:?}\0", s));
-    }
-    // _print(">>\0");
+    log::debug(format!("('{}')))))... {}\0", id_val, size as i32));
 
+    let raw_events: &[u8] = unsafe {
+        let slice = slice::from_raw_parts(data, size as usize);
+        mem::transmute(slice)
+    };
 
-    // let s = s.into_string().unwrap();
-    
-    // let mut block = blockObj.lock().unwrap();
-    // let grid = gridObj.lock().unwrap();
-    // let events = unsafe { CString::from_raw(data) };
-    // let bytes = events.into_bytes();
+    send_back(on_event(id_val as u8, &raw_events.to_vec()));
 
-    // for byte in bytes.clone() {
-    //     let event = BlockEvent::from_event(byte);
-    //     match event {
-    //         BlockEvent::Rotate => {
-    //             if block.type_ref() != &BlockType::O {
-    //                 block.rotate();
-    //             }
-    //         }
-    //         BlockEvent::Left => block.move_left(|points| grid.is_empty(points)),
-    //         BlockEvent::Right => block.move_right(|points| grid.is_empty(points)),
-    //         BlockEvent::Down => block.move_down(|points| grid.is_empty(points)),
-    //         BlockEvent::Drop => block.drop_down(|points| grid.is_empty(points)),
-    //         _ => (),
-    //     };
-
-    //     let range = block.range();
-    //     block.check_left_bound(&range);
-    //     block.check_right_bound(&range);
-    //     block.check_bottom_bound(&range);
-    // }
-
-    // unsafe {
-    //     asm::emscripten_log(asm::EM_LOG_ERROR as i32, "#2\n");
-    // }
-
-    // let mut msg = block.get_points_ref().iter().fold(
-    //     String::new(),
-    //     |acc, point| {
-    //         let point_string = format!("({},{})", point.x(), point.y());
-    //         let point_str = point_string.as_str();
-    //         acc + point_str
-    //     },
-    // );
-
-    // unsafe {
-    //     asm::emscripten_log(asm::EM_LOG_ERROR as i32, "#3\n");
-    // }
-
-    // unsafe {
-    //     asm::emscripten_log(asm::EM_LOG_ERROR as i32, "#3-1: %d\n", bytes.len());
-    // }
-
-    // let mut points = bytes;
-    // points.clear();
-    // // if msg.len() > points.len() {
-    //     points.append(&mut msg.into_bytes());
-    // // } else {
-    // //     points.append(&mut msg.into_bytes());
-    // //     points.shrink_to_fit();
-    // // }
-    // points.shrink_to_fit();
-
-    // unsafe {
-    //     asm::emscripten_log(asm::EM_LOG_ERROR as i32, "#4\n");
-    // }
-
-    // unsafe {
-    //     asm::emscripten_log(asm::EM_LOG_ERROR as i32, "#4-1: %d\n", points.len());
-    // }
-
-    // let len = points.len() as i32;
-    // let send_back_value = unsafe { CString::from_vec_unchecked(points) };
-    // let send_back_value_ptr = send_back_value.into_raw();
-
-    // unsafe {
-    //     asm::emscripten_log(asm::EM_LOG_ERROR as i32, "#5\n");
-    // }
-
-    // unsafe {
-    //     asm::emscripten_worker_respond(send_back_value_ptr, len + 1);
-    // }
-
-    // 2.
-    // let len = points.len() as i32;
-    // let send_back_value = unsafe { std::ffi::CString::from_vec_unchecked(points) };
-    // let send_back_value_ptr = send_back_value.into_raw();
-    // unsafe {
-    //     asm::emscripten_worker_respond(send_back_value_ptr, len);
-    // }
+    log::debug(format!("...((((('{}')\0", id_val));
 }
 
-#[derive(Debug)]
-struct Point {
-    x: i32,
-    y: i32,
-}
+pub fn on_event(id_val: u8, events: &Vec<u8>) -> Msg {
+    log::debug(format!("events {:?}\0", events));
 
-impl Point {
-    fn new(x: i32, y: i32) -> Point {
-        Point { x: x, y: y }
+    let mut block = BLOCK_OBJ.lock().unwrap();
+    let grid = GRID_OBJ.lock().unwrap();
+
+    for event in events {
+        let event = tetris_struct::BlockEvent::from_event(*event);
+        match event {
+            BlockEvent::Rotate => {
+                if block.type_ref() != &BlockType::O {
+                    block.rotate();
+                }
+            }
+            BlockEvent::Left => block.move_left(|points| grid.is_empty(points)),
+            BlockEvent::Right => block.move_right(|points| grid.is_empty(points)),
+            BlockEvent::Down => block.move_down(|points| grid.is_empty(points)),
+            BlockEvent::Drop => block.drop_down(|points| grid.is_empty(points)),
+            _ => (),
+        };
+
+        let range = block.range();
+        block.check_left_bound(&range);
+        block.check_right_bound(&range);
+        block.check_bottom_bound(&range);
     }
 
-    fn x(&self) -> i32 {
-        self.x
-    }
+    let points = block
+        .get_points_ref()
+        .iter()
+        .map(|point| Point::new(point.x(), point.y()))
+        .collect();
 
-    fn y(&self) -> i32 {
-        self.y
-    }
-}
-
-#[derive(Debug)]
-struct Rect {
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-}
-
-impl Rect {
-    fn new(x: i32, y: i32, width: u32, height: u32) -> Rect {
-        Rect {
-            x: x,
-            y: y,
-            width: width,
-            height: height,
-        }
-    }
-
-    fn x(&self) -> i32 {
-        self.x
-    }
-
-    fn y(&self) -> i32 {
-        self.y
-    }
-
-    fn width(&self) -> u32 {
-        self.width
-    }
-
-    fn height(&self) -> u32 {
-        self.height
-    }
+    Msg::new(id_val, points, [[0_u8; COLUMNS as usize]; ROWS as usize])
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -514,17 +377,17 @@ impl Block {
 
         let points = self.get_points_ref();
         for b in points {
-            if b.x.gt(&max_x) {
-                max_x = b.x;
+            if b.x().gt(&max_x) {
+                max_x = b.x();
             }
-            if b.x.lt(&min_x) {
-                min_x = b.x;
+            if b.x().lt(&min_x) {
+                min_x = b.x();
             }
-            if b.y.gt(&max_y) {
-                max_y = b.y;
+            if b.y().gt(&max_y) {
+                max_y = b.y();
             }
-            if b.y.lt(&min_y) {
-                min_y = b.y;
+            if b.y().lt(&min_y) {
+                min_y = b.y();
             }
         }
 

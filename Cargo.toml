@@ -5,7 +5,12 @@ authors = ["freestrings <freestrings@gmail.com>"]
 
 [dependencies]
 sdl2 = "0.30"
-libc = "0.2"
+lazy_static = "0.2"
+serde_json = "1.0"
+serde_derive = "1.0"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 emscripten-sys = "0.3"
+
+[dependencies.tetris_struct]
+path = "./tetris_struct"

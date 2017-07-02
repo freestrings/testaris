@@ -1,1 +1,1 @@
-mkdir -p target/www && emcc "-s" "USE_SDL=2" "-o" "target/www/tetris.html" $@
+mkdir -p target/www && emcc "-s" "USE_SDL=2" "-o" "target/www/Tetris.html" $@

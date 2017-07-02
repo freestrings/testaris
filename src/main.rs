@@ -1,11 +1,16 @@
 extern crate emscripten_sys as asm;
 extern crate sdl2;
-extern crate libc;
+#[macro_use]
+extern crate lazy_static;
+extern crate serde_json;
+
+extern crate tetris_struct;
 
 use std::ptr;
 use std::os::raw::{c_char, c_int, c_void};
 use std::ffi::CString;
 use std::collections::HashSet;
+use std::sync::Mutex;
 use std::mem;
 
 use sdl2::EventPump;
@@ -16,14 +21,43 @@ use sdl2::rect::{Point, Rect};
 use sdl2::render::{Canvas, Texture, TextureCreator, WindowCanvas};
 use sdl2::video::{Window, WindowContext};
 
-const COLUMNS: u32 = 10;
-const ROWS: u32 = 20;
+use tetris_struct::*;
+
 const BORDER: u32 = 1;
 const WINDOW_WIDTH: u32 = BORDER + COLUMNS + BORDER + RIGHT_PANEL + BORDER;
 const WINDOW_HEIGHT: u32 = BORDER + ROWS + BORDER;
 const RIGHT_PANEL: u32 = 5;
 const SCALE: u32 = 20;
-const DEFAULT_GRAVITY: u8 = 20;
+
+lazy_static!{
+    static ref MESSAGE: Mutex<Vec<Msg>> = Mutex::new(vec![]);
+}
+
+extern "C" fn main_loop_callback(arg: *mut c_void) {
+    unsafe {
+        let mut app: &mut App = mem::transmute(arg);
+        app.run();
+    }
+}
+
+extern "C" fn em_worker_callback_func(data: *mut c_char, size: c_int, _user_args: *mut c_void) {
+
+    let raw_msg: &[u8] = unsafe {
+        let slice = std::slice::from_raw_parts(data, size as usize - 1);
+        mem::transmute(slice)
+    };
+
+    let msg = String::from_utf8(raw_msg.to_vec()).unwrap();
+    let msg: Msg = serde_json::from_str(msg.as_str()).unwrap();
+
+    if msg.get_points().len() == 0 {
+        println!("empty");
+        return;
+    }
+
+    let mut messages = MESSAGE.lock().unwrap();
+    messages.push(msg);
+}
 
 fn main() {
 
@@ -53,36 +87,41 @@ fn main() {
     mem::forget(app);
 }
 
-extern "C" fn main_loop_callback(arg: *mut c_void) {
-    unsafe {
-        let mut app: &mut App = mem::transmute(arg);
-        app.run();
-    }
-}
+fn create_and_init_workers(count: u8) -> Vec<c_int> {
+    (0..count)
+        .map(|i| {
+            let resource = CString::new("tetriscore.js").unwrap();
+            let handle = unsafe { asm::emscripten_create_worker(resource.as_ptr()) };
 
-extern "C" fn em_worker_callback_func(data: *mut c_char, size: c_int, user_args: *mut c_void) {
-    // 1.
-    // let msg = unsafe { std::ffi::CString::from_raw(data) };
-    // let bytes = msg.into_string();
-    // println!("{:?}", bytes);
-    // mem::forget(bytes);
+            let worker_func_name = CString::new("init_event").unwrap();
+            let worker_func_name_ptr = worker_func_name.as_ptr();
 
-    // 2.
-    // let msg = unsafe { std::ffi::CString::from_raw(data) };
-    // let bytes = msg.into_bytes();
-    // println!("{:?}", bytes);
-}
+            let id: Vec<u8> = vec![i];
+            let len = id.len() as i32;
+            let send_value = unsafe { CString::from_vec_unchecked(id) };
+            let send_value_ptr = send_value.into_raw();
 
-#[derive(Debug)]
-struct Msg {
-    data: Vec<u8>
+            unsafe {
+                asm::emscripten_call_worker(
+                    handle,
+                    worker_func_name_ptr,
+                    send_value_ptr,
+                    len,
+                    Some(em_worker_callback_func),
+                    ptr::null_mut(),
+                );
+            }
+
+            handle
+        })
+        .collect()
 }
 
 struct App<'a> {
     canvas: Canvas<Window>,
     texture: Texture<'a>,
     events: EventPump,
-    worker_handle: c_int,
+    worker_handles: Vec<c_int>,
 }
 
 impl<'a> App<'a> {
@@ -96,19 +135,16 @@ impl<'a> App<'a> {
             .create_texture_target(None, WINDOW_WIDTH, WINDOW_HEIGHT)
             .unwrap();
 
-        let resource = CString::new("tetriscore.js").unwrap();
-        let worker_handle = unsafe { asm::emscripten_create_worker(resource.as_ptr()) };
-
         App {
             canvas: canvas,
             texture: texture,
             events: events,
-            worker_handle: worker_handle,
+            worker_handles: create_and_init_workers(50),
         }
     }
 
     fn events(&mut self) -> HashSet<u8> {
-        let mut events: HashSet<u8> = self.events
+        let events: HashSet<u8> = self.events
             .poll_iter()
             .map(|event| match event {
                 Event::KeyDown { keycode: Some(Keycode::Up), .. } => {
@@ -134,70 +170,51 @@ impl<'a> App<'a> {
         events
     }
 
-    fn run(&mut self) {
+    fn handle_events(&mut self) {
         let events = self.events();
 
-        if events.len() > 0 {
-            // let events: Vec<u8> = events.iter().map(|e| *e).collect();
-            // let len = events.len() as i32;
-            
-            // let send_value = unsafe { std::ffi::CString::from_vec_unchecked(events) };
-            // let send_value_ptr = send_value.into_raw();
+        if events.len() == 0 {
+            return;
+        }
 
-            let worker_func_name = CString::new("post_event").unwrap();
-            let worker_func_name_ptr = worker_func_name.as_ptr();
+        let events: Vec<u8> = events.iter().map(|e| *e).collect();
+        let len = events.len() as i32;
+        let send_value = unsafe { CString::from_vec_unchecked(events) };
+        let send_value_ptr = send_value.into_raw();
 
-            let mut s = String::from("cc");
-            // let len = s.len() as i32;
-            // let mut s = Box::new(s);
-            let s = CString::new(s).unwrap();
-            let s = s.into_raw();
-            // let s = &mut s as *mut _ as *mut c_char;
+        let worker_func_name = CString::new("post_event").unwrap();
+        let worker_func_name_ptr = worker_func_name.as_ptr();
 
+        let ref worker_handles = self.worker_handles;
+        for worker_handle in worker_handles {
             unsafe {
                 asm::emscripten_call_worker(
-                    self.worker_handle,
+                    *worker_handle,
                     worker_func_name_ptr,
-                    s,
-                    libc::strlen(s) as i32,
+                    send_value_ptr,
+                    len,
                     Some(em_worker_callback_func),
                     ptr::null_mut(),
                 );
             }
         }
     }
-}
 
-#[derive(PartialEq, Eq, Hash)]
-enum BlockEvent {
-    Left,
-    Right,
-    Down,
-    Drop,
-    Rotate,
-    None,
-}
-
-impl BlockEvent {
-    fn from_event(evt: u8) -> BlockEvent {
-        match evt {
-            1 => BlockEvent::Left,
-            2 => BlockEvent::Right,
-            3 => BlockEvent::Down,
-            4 => BlockEvent::Drop,
-            5 => BlockEvent::Rotate,
-            _ => BlockEvent::None,
+    fn handle_messages(&mut self) {
+        let mut messages = MESSAGE.lock().unwrap();
+        if messages.is_empty() {
+            return;
         }
+        while !messages.is_empty() {
+            if let Some(message) = messages.pop() {
+                // println!("{} - {:?}", message.get_id(), message.get_points());
+            }
+        }
+        println!("done");
     }
 
-    fn to_block_event(&self) -> u8 {
-        match *self {
-            BlockEvent::Left => 1,
-            BlockEvent::Right => 2,
-            BlockEvent::Down => 3,
-            BlockEvent::Drop => 4,
-            BlockEvent::Rotate => 5,
-            _ => 6,
-        }
+    fn run(&mut self) {
+        self.handle_events();
+        self.handle_messages();
     }
 }
