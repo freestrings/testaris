@@ -1,8 +1,9 @@
 extern crate emscripten_sys as asm;
 #[macro_use]
 extern crate lazy_static;
-extern crate rand;
 extern crate libc;
+extern crate rand;
+extern crate serde_json;
 extern crate tetris_struct;
 
 use std::f32::consts::PI;
@@ -23,12 +24,23 @@ fn main() {}
 type Points = Vec<Point>;
 type Color = (u8, u8, u8);
 
-// 웹 워커당 하나씩 있기 때문에 스레드 세이프하지만,
-// 전역으로 Block, Grid 상태를 유지 할 방법이 없다.
 lazy_static!{
-    static ref BLOCK_OBJ: Mutex<Block> = Mutex::new(Block::new(BlockType::random()));
-    static ref GRID_OBJ: Mutex<Grid> = Mutex::new(Grid::new());
-    static ref ID: Mutex<RefCell<i8>> = Mutex::new(RefCell::new(-1));
+    static ref TETRIS: Mutex<Vec<Tetris>> = Mutex::new(vec![]);
+    static ref IDX: Mutex<Option<u8>> = Mutex::new(None);
+}
+
+struct Tetris {
+    pub block: Block,
+    pub grid: Grid,
+}
+
+impl Tetris {
+    fn new() -> Tetris {
+        Tetris {
+            block: Block::new(BlockType::random()),
+            grid: Grid::new(),
+        }
+    }
 }
 
 mod log {
@@ -47,10 +59,16 @@ mod log {
     }
 }
 
+fn into_raw<'a>(data: *mut c_char, size: c_int) -> &'a [u8] {
+    unsafe {
+        let slice = slice::from_raw_parts(data, size as usize);
+        mem::transmute(slice)
+    }
+}
+
 fn send_back(msg: Msg) {
     match msg.to_json() {
         Ok(json) => {
-            // log::debug(format!("{:?}\0", json));
 
             let send_back = CString::new(json).unwrap();
             let send_back_ptr = send_back.into_raw();
@@ -69,24 +87,28 @@ fn send_back(msg: Msg) {
 #[no_mangle]
 pub fn init_event(data: *mut c_char, size: c_int) {
 
-    let init_id: &[u8] = unsafe {
-        let slice = slice::from_raw_parts(data, size as usize);
-        mem::transmute(slice)
-    };
+    let init_value = into_raw(data, size);
 
-    log::debug(format!("init id: {}\0", init_id[0]));
+    log::debug(format!("init id: {:?}\0", init_value));
 
-    let init_id = init_id[0];
-    let mut id_ref = ID.lock().unwrap();
+    let worker_index = init_value[0];
+    let tetris_count = init_value[1];
 
-    if *id_ref.borrow() != -1 {
+    if let Some(idx) = *IDX.lock().unwrap() {
+        log::error(format!("already initialized: {}\0", idx));
         return;
     }
 
-    *id_ref.get_mut() = init_id as i8;
+    *IDX.lock().unwrap() = Some(worker_index);
+
+    let mut tetris_ref = TETRIS.lock().unwrap();
+    for i in 0..tetris_count {
+        tetris_ref.push(Tetris::new());
+    }
 
     let msg = Msg::new(
-        *id_ref.borrow() as u8,
+        (*IDX.lock().unwrap()).unwrap(),
+        0, // No meaning
         vec![],
         [[0_u8; COLUMNS as usize]; ROWS as usize],
     );
@@ -96,30 +118,33 @@ pub fn init_event(data: *mut c_char, size: c_int) {
 
 #[no_mangle]
 pub fn post_event(data: *mut c_char, size: c_int) {
+    let raw_event = into_raw(data, size);
+    let tetris_event = String::from_utf8(raw_event.to_vec()).unwrap();
+    let tetris_event: TetrisEvent = serde_json::from_str(tetris_event.as_str()).unwrap();
 
-    let id_ref = ID.lock().unwrap();
-    let id_val = *id_ref.borrow();
-
-    log::debug(format!("('{}')))))... {}\0", id_val, size as i32));
-
-    let raw_events: &[u8] = unsafe {
-        let slice = slice::from_raw_parts(data, size as usize);
-        mem::transmute(slice)
+    let is_match = match *IDX.lock().unwrap() {
+        Some(ref idx) => tetris_event.worker_id.ne(idx),
+        None => true,
     };
 
-    send_back(on_event(id_val as u8, &raw_events.to_vec()));
+    if is_match {
+        return;
+    }
 
-    log::debug(format!("...((((('{}')\0", id_val));
+    send_back(on_event(tetris_event));
 }
 
-pub fn on_event(id_val: u8, events: &Vec<u8>) -> Msg {
-    log::debug(format!("events {:?}\0", events));
+pub fn on_event(tetris_event: TetrisEvent) -> Msg {
+    log::debug(format!("tetris_event {:?}\0", tetris_event));
 
-    let mut block = BLOCK_OBJ.lock().unwrap();
-    let grid = GRID_OBJ.lock().unwrap();
+    let tetris_idx = tetris_event.tetris_idx as usize;
 
-    for event in events {
-        let event = tetris_struct::BlockEvent::from_event(*event);
+    let ref mut tetris = TETRIS.lock().unwrap()[tetris_idx];
+    let ref mut block = tetris.block;
+    let ref mut grid = tetris.grid;
+
+    for event in tetris_event.events {
+        let event = tetris_struct::BlockEvent::from_event(event);
         match event {
             BlockEvent::Rotate => {
                 if block.type_ref() != &BlockType::O {
@@ -145,7 +170,12 @@ pub fn on_event(id_val: u8, events: &Vec<u8>) -> Msg {
         .map(|point| Point::new(point.x(), point.y()))
         .collect();
 
-    Msg::new(id_val, points, [[0_u8; COLUMNS as usize]; ROWS as usize])
+    Msg::new(
+        tetris_event.worker_id,
+        tetris_event.tetris_idx,
+        points,
+        [[0_u8; COLUMNS as usize]; ROWS as usize],
+    )
 }
 
 #[derive(Clone, Debug, PartialEq)]

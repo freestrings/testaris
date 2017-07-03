@@ -1,9 +1,9 @@
 extern crate emscripten_sys as asm;
-extern crate sdl2;
 #[macro_use]
 extern crate lazy_static;
+extern crate libc;
 extern crate serde_json;
-
+extern crate sdl2;
 extern crate tetris_struct;
 
 use std::ptr;
@@ -50,7 +50,7 @@ extern "C" fn em_worker_callback_func(data: *mut c_char, size: c_int, _user_args
     let msg = String::from_utf8(raw_msg.to_vec()).unwrap();
     let msg: Msg = serde_json::from_str(msg.as_str()).unwrap();
 
-    if msg.get_points().len() == 0 {
+    if msg.points.len() == 0 {
         println!("empty");
         return;
     }
@@ -77,7 +77,7 @@ fn main() {
 
     let texture_creator: TextureCreator<WindowContext> = canvas.texture_creator();
 
-    let mut app = Box::new(App::new(canvas, events, &texture_creator));
+    let mut app = Box::new(App::new(canvas, events, &texture_creator, 4, 100));
     let app_ptr = &mut *app as *mut App as *mut c_void;
 
     unsafe {
@@ -87,8 +87,9 @@ fn main() {
     mem::forget(app);
 }
 
-fn create_and_init_workers(count: u8) -> Vec<c_int> {
-    (0..count)
+fn create_and_init_workers(worker_count: u8, tetris_count_per_worker: u8) -> Vec<c_int> {
+
+    (0..worker_count)
         .map(|i| {
             let resource = CString::new("tetriscore.js").unwrap();
             let handle = unsafe { asm::emscripten_create_worker(resource.as_ptr()) };
@@ -96,9 +97,9 @@ fn create_and_init_workers(count: u8) -> Vec<c_int> {
             let worker_func_name = CString::new("init_event").unwrap();
             let worker_func_name_ptr = worker_func_name.as_ptr();
 
-            let id: Vec<u8> = vec![i];
-            let len = id.len() as i32;
-            let send_value = unsafe { CString::from_vec_unchecked(id) };
+            let init_value: Vec<u8> = vec![i, tetris_count_per_worker];
+            let len = init_value.len() as i32;
+            let send_value = unsafe { CString::from_vec_unchecked(init_value) };
             let send_value_ptr = send_value.into_raw();
 
             unsafe {
@@ -122,6 +123,8 @@ struct App<'a> {
     texture: Texture<'a>,
     events: EventPump,
     worker_handles: Vec<c_int>,
+    worker_count: u8,
+    tetris_count_per_worker: u8,
 }
 
 impl<'a> App<'a> {
@@ -129,6 +132,8 @@ impl<'a> App<'a> {
         canvas: WindowCanvas,
         events: EventPump,
         texture_creator: &'a TextureCreator<WindowContext>,
+        worker_count: u8,
+        tetris_count_per_worker: u8,
     ) -> App {
 
         let texture = texture_creator
@@ -139,7 +144,9 @@ impl<'a> App<'a> {
             canvas: canvas,
             texture: texture,
             events: events,
-            worker_handles: create_and_init_workers(50),
+            worker_handles: create_and_init_workers(worker_count, tetris_count_per_worker),
+            worker_count: worker_count,
+            tetris_count_per_worker: tetris_count_per_worker
         }
     }
 
@@ -178,24 +185,40 @@ impl<'a> App<'a> {
         }
 
         let events: Vec<u8> = events.iter().map(|e| *e).collect();
-        let len = events.len() as i32;
-        let send_value = unsafe { CString::from_vec_unchecked(events) };
-        let send_value_ptr = send_value.into_raw();
 
         let worker_func_name = CString::new("post_event").unwrap();
         let worker_func_name_ptr = worker_func_name.as_ptr();
 
         let ref worker_handles = self.worker_handles;
-        for worker_handle in worker_handles {
-            unsafe {
-                asm::emscripten_call_worker(
-                    *worker_handle,
-                    worker_func_name_ptr,
-                    send_value_ptr,
-                    len,
-                    Some(em_worker_callback_func),
-                    ptr::null_mut(),
-                );
+        for i in 0..self.worker_count {
+            let worker_handle = worker_handles[i as usize];
+
+            for j in 0..self.tetris_count_per_worker {
+
+                let tetris_event = TetrisEvent::new(i, j, events.clone());
+
+                // println!("send, {}:{}", i, j);
+
+                match tetris_event.to_json() {
+                    Ok(json) => {
+                        let send = CString::new(json).unwrap();
+                        let send_ptr = send.into_raw();
+                        let len = unsafe { libc::strlen(send_ptr) as i32 };
+                        unsafe {
+                            asm::emscripten_call_worker(
+                                worker_handle,
+                                worker_func_name_ptr,
+                                send_ptr,
+                                len,
+                                Some(em_worker_callback_func),
+                                ptr::null_mut(),
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        panic!("{:?}", e);
+                    }
+                }
             }
         }
     }
@@ -205,12 +228,14 @@ impl<'a> App<'a> {
         if messages.is_empty() {
             return;
         }
+
+        let len = messages.len();
         while !messages.is_empty() {
             if let Some(message) = messages.pop() {
-                // println!("{} - {:?}", message.get_id(), message.get_points());
+                // println!("{}:{} -> {:?}", message.worker_id, message.tetris_id, message.points);
             }
         }
-        println!("done");
+        println!("done: {}", len);
     }
 
     fn run(&mut self) {

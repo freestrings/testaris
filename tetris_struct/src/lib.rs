@@ -79,31 +79,46 @@ impl BlockEvent {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Msg {
-    id: u8,
-    points: Vec<Point>,
-    grid: [[u8; COLUMNS as usize]; ROWS as usize],
+pub struct TetrisEvent {
+    pub worker_id: u8,
+    pub tetris_idx: u8,
+    pub events: Vec<u8>,
 }
 
-impl Msg {
-    pub fn new(id: u8, points: Vec<Point>, grid: [[u8; COLUMNS as usize]; ROWS as usize]) -> Msg {
-        Msg {
-            id: id,
-            points: points,
-            grid: grid,
+impl TetrisEvent {
+    pub fn new(worker_id: u8, tetris_idx: u8, events: Vec<u8>) -> TetrisEvent {
+        TetrisEvent {
+            worker_id: worker_id,
+            tetris_idx: tetris_idx,
+            events: events,
         }
-    }
-
-    pub fn get_id(&self) -> u8 {
-        self.id
     }
 
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(&self)
     }
+}
 
-    pub fn get_points(&self) -> &Vec<Point> {
-        &self.points
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Msg {
+    pub worker_id: u8,
+    pub tetris_id: u8,
+    pub points: Vec<Point>,
+    pub grid: [[u8; COLUMNS as usize]; ROWS as usize],
+}
+
+impl Msg {
+    pub fn new(worker_id: u8, tetris_id: u8, points: Vec<Point>, grid: [[u8; COLUMNS as usize]; ROWS as usize]) -> Msg {
+        Msg {
+            worker_id: worker_id,
+            tetris_id: tetris_id,
+            points: points,
+            grid: grid,
+        }
+    }
+
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(&self)
     }
 }
 
