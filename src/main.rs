@@ -31,6 +31,7 @@ const SCALE: u32 = 20;
 
 lazy_static!{
     static ref MESSAGE: Mutex<Vec<Msg>> = Mutex::new(vec![]);
+    static ref EVENT_Q: Mutex<Vec<BlockEvent>> = Mutex::new(vec![]);
 }
 
 extern "C" fn main_loop_callback(arg: *mut c_void) {
@@ -59,6 +60,20 @@ extern "C" fn em_worker_callback_func(data: *mut c_char, size: c_int, _user_args
     messages.push(msg);
 }
 
+//
+// cwrap('move_rotate', 'number')();
+#[no_mangle]
+pub fn move_rotate() -> u8 {
+    println!("rotate");
+    match EVENT_Q.lock() {
+        Ok(mut v) => {
+            v.push(BlockEvent::Rotate);
+            0
+        }
+        Err(_) => 1,
+    }
+}
+
 fn main() {
 
     let sdl_context = sdl2::init().unwrap();
@@ -77,7 +92,7 @@ fn main() {
 
     let texture_creator: TextureCreator<WindowContext> = canvas.texture_creator();
 
-    let mut app = Box::new(App::new(canvas, events, &texture_creator, 4, 100));
+    let mut app = Box::new(App::new(canvas, events, &texture_creator, 4, 50));
     let app_ptr = &mut *app as *mut App as *mut c_void;
 
     unsafe {
@@ -151,7 +166,7 @@ impl<'a> App<'a> {
     }
 
     fn events(&mut self) -> HashSet<u8> {
-        let events: HashSet<u8> = self.events
+        let mut events: HashSet<u8> = self.events
             .poll_iter()
             .map(|event| match event {
                 Event::KeyDown { keycode: Some(Keycode::Up), .. } => {
@@ -173,6 +188,15 @@ impl<'a> App<'a> {
             })
             .filter(|e| e > &0)
             .collect();
+
+        match EVENT_Q.lock() {
+            Ok(mut v) => {
+                while let Some(e) = v.pop() {
+                    events.insert(e.to_block_event());
+                }
+            }
+            Err(_) => (),
+        }
 
         events
     }
