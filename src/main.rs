@@ -4,7 +4,7 @@ extern crate lazy_static;
 extern crate libc;
 extern crate serde_json;
 extern crate sdl2;
-extern crate tetris_struct;
+extern crate tetris_struct as ts;
 
 use std::ptr;
 use std::os::raw::{c_char, c_int, c_void};
@@ -21,17 +21,19 @@ use sdl2::rect::{Point, Rect};
 use sdl2::render::{Canvas, Texture, TextureCreator, WindowCanvas};
 use sdl2::video::{Window, WindowContext};
 
-use tetris_struct::*;
-
 const BORDER: u32 = 1;
-const WINDOW_WIDTH: u32 = BORDER + COLUMNS + BORDER + RIGHT_PANEL + BORDER;
-const WINDOW_HEIGHT: u32 = BORDER + ROWS + BORDER;
 const RIGHT_PANEL: u32 = 5;
-const SCALE: u32 = 20;
+const WINDOW_WIDTH: u32 = BORDER + ts::COLUMNS + BORDER + RIGHT_PANEL + BORDER;
+const WINDOW_HEIGHT: u32 = BORDER + ts::ROWS + BORDER;
+const TARGET_RENDER_WIDTH: u32 = 360;
+const TARGET_RENDER_HEIGHT: u32 = 440;
+
+const WORKER_COUNT: u8 = 2;
+const TETRIS_COUNT: u8 = 100;
 
 lazy_static!{
-    static ref MESSAGE: Mutex<Vec<Msg>> = Mutex::new(vec![]);
-    static ref EVENT_Q: Mutex<Vec<BlockEvent>> = Mutex::new(vec![]);
+    static ref MESSAGE: Mutex<Vec<ts::Msg>> = Mutex::new(vec![]);
+    static ref EVENT_Q: Mutex<Vec<ts::BlockEvent>> = Mutex::new(vec![]);
 }
 
 extern "C" fn main_loop_callback(arg: *mut c_void) {
@@ -49,7 +51,7 @@ extern "C" fn em_worker_callback_func(data: *mut c_char, size: c_int, _user_args
     };
 
     let msg = String::from_utf8(raw_msg.to_vec()).unwrap();
-    let msg: Msg = serde_json::from_str(msg.as_str()).unwrap();
+    let msg: ts::Msg = serde_json::from_str(msg.as_str()).unwrap();
 
     if msg.points.len() == 0 {
         println!("empty");
@@ -67,7 +69,7 @@ pub fn move_rotate() -> u8 {
     println!("rotate");
     match EVENT_Q.lock() {
         Ok(mut v) => {
-            v.push(BlockEvent::Rotate);
+            v.push(ts::BlockEvent::Rotate);
             0
         }
         Err(_) => 1,
@@ -75,12 +77,12 @@ pub fn move_rotate() -> u8 {
 }
 
 fn main() {
-
     let sdl_context = sdl2::init().unwrap();
     let events = sdl_context.event_pump().unwrap();
     let video_subsystem = sdl_context.video().unwrap();
+
     let window = video_subsystem
-        .window("Tetris", WINDOW_WIDTH * SCALE, WINDOW_HEIGHT * SCALE)
+        .window("Tetris", TARGET_RENDER_WIDTH, TARGET_RENDER_WIDTH)
         .build()
         .unwrap();
     let canvas: WindowCanvas = window
@@ -89,10 +91,15 @@ fn main() {
         .target_texture()
         .build()
         .unwrap();
-
     let texture_creator: TextureCreator<WindowContext> = canvas.texture_creator();
 
-    let mut app = Box::new(App::new(canvas, events, &texture_creator, 4, 50));
+    let mut app = Box::new(App::new(
+        canvas,
+        events,
+        &texture_creator,
+        WORKER_COUNT,
+        TETRIS_COUNT,
+    ));
     let app_ptr = &mut *app as *mut App as *mut c_void;
 
     unsafe {
@@ -102,40 +109,78 @@ fn main() {
     mem::forget(app);
 }
 
+fn call_worker(handle: c_int, func_name: *const c_char, data: *mut c_char, len: c_int) {
+    unsafe {
+        asm::emscripten_call_worker(
+            handle,
+            func_name,
+            data,
+            len,
+            Some(em_worker_callback_func),
+            ptr::null_mut(),
+        );
+    }
+}
+
 fn create_and_init_workers(worker_count: u8, tetris_count_per_worker: u8) -> Vec<c_int> {
 
     (0..worker_count)
         .map(|i| {
             let resource = CString::new("tetriscore.js").unwrap();
             let handle = unsafe { asm::emscripten_create_worker(resource.as_ptr()) };
-
-            let worker_func_name = CString::new("init_event").unwrap();
-            let worker_func_name_ptr = worker_func_name.as_ptr();
+            let func_name = CString::new("init_event").unwrap();
+            let func_name = func_name.as_ptr();
 
             let init_value: Vec<u8> = vec![i, tetris_count_per_worker];
             let len = init_value.len() as i32;
             let send_value = unsafe { CString::from_vec_unchecked(init_value) };
-            let send_value_ptr = send_value.into_raw();
+            let send_value = send_value.into_raw();
 
-            unsafe {
-                asm::emscripten_call_worker(
-                    handle,
-                    worker_func_name_ptr,
-                    send_value_ptr,
-                    len,
-                    Some(em_worker_callback_func),
-                    ptr::null_mut(),
-                );
-            }
+            call_worker(handle, func_name, send_value, len);
 
             handle
         })
         .collect()
 }
 
+fn send_event(tetris_event: ts::TetrisEvent, handle: c_int) {
+    let func_name = CString::new("post_event").unwrap();
+    let func_name = func_name.as_ptr();
+
+    match tetris_event.to_json() {
+        Ok(json) => {
+            let send = CString::new(json).unwrap();
+            let send = send.into_raw();
+            let len = unsafe { libc::strlen(send) as i32 };
+
+            call_worker(handle, func_name, send, len);
+        }
+        Err(e) => {
+            panic!("{:?}", e);
+        }
+    };
+}
+
+struct Painter {
+    ranges: Vec<ts::Rect>,
+}
+
+// 
+impl Painter {
+    fn new(tetris: u32) -> Painter {
+        let count = (TARGET_RENDER_WIDTH * TARGET_RENDER_HEIGHT) / (WINDOW_WIDTH * WINDOW_HEIGHT);
+        let width = TARGET_RENDER_WIDTH / count;
+        let height = TARGET_RENDER_HEIGHT / count;
+
+        println!("{}, {}, {}", count, width, height);
+
+        Painter { ranges: vec![] }
+    }
+}
+
 struct App<'a> {
     canvas: Canvas<Window>,
-    texture: Texture<'a>,
+    textures: Vec<Texture<'a>>,
     events: EventPump,
     worker_handles: Vec<c_int>,
     worker_count: u8,
@@ -151,17 +196,24 @@ impl<'a> App<'a> {
         tetris_count_per_worker: u8,
     ) -> App {
 
-        let texture = texture_creator
-            .create_texture_target(None, WINDOW_WIDTH, WINDOW_HEIGHT)
-            .unwrap();
+        let mut textures: Vec<Texture<'a>> = Vec::new();
+        for t in 0..(WORKER_COUNT * TETRIS_COUNT) {
+            textures.push(
+                texture_creator
+                    .create_texture_target(None, WINDOW_WIDTH, WINDOW_HEIGHT)
+                    .unwrap(),
+            );
+        }
+
+        Painter::new(WORKER_COUNT as u32 * TETRIS_COUNT as u32);
 
         App {
             canvas: canvas,
-            texture: texture,
+            textures: textures,
             events: events,
             worker_handles: create_and_init_workers(worker_count, tetris_count_per_worker),
             worker_count: worker_count,
-            tetris_count_per_worker: tetris_count_per_worker
+            tetris_count_per_worker: tetris_count_per_worker,
         }
     }
 
@@ -170,19 +222,19 @@ impl<'a> App<'a> {
             .poll_iter()
             .map(|event| match event {
                 Event::KeyDown { keycode: Some(Keycode::Up), .. } => {
-                    BlockEvent::Rotate.to_block_event()
+                    ts::BlockEvent::Rotate.to_block_event()
                 }
                 Event::KeyDown { keycode: Some(Keycode::Left), .. } => {
-                    BlockEvent::Left.to_block_event()
+                    ts::BlockEvent::Left.to_block_event()
                 }
                 Event::KeyDown { keycode: Some(Keycode::Right), .. } => {
-                    BlockEvent::Right.to_block_event()
+                    ts::BlockEvent::Right.to_block_event()
                 }
                 Event::KeyDown { keycode: Some(Keycode::Down), .. } => {
-                    BlockEvent::Down.to_block_event()
+                    ts::BlockEvent::Down.to_block_event()
                 }
                 Event::KeyDown { keycode: Some(Keycode::Space), .. } => {
-                    BlockEvent::Drop.to_block_event()
+                    ts::BlockEvent::Drop.to_block_event()
                 }
                 _ => 0,
             })
@@ -210,39 +262,13 @@ impl<'a> App<'a> {
 
         let events: Vec<u8> = events.iter().map(|e| *e).collect();
 
-        let worker_func_name = CString::new("post_event").unwrap();
-        let worker_func_name_ptr = worker_func_name.as_ptr();
-
         let ref worker_handles = self.worker_handles;
-        for i in 0..self.worker_count {
-            let worker_handle = worker_handles[i as usize];
-
-            for j in 0..self.tetris_count_per_worker {
-
-                let tetris_event = TetrisEvent::new(i, j, events.clone());
-
-                // println!("send, {}:{}", i, j);
-
-                match tetris_event.to_json() {
-                    Ok(json) => {
-                        let send = CString::new(json).unwrap();
-                        let send_ptr = send.into_raw();
-                        let len = unsafe { libc::strlen(send_ptr) as i32 };
-                        unsafe {
-                            asm::emscripten_call_worker(
-                                worker_handle,
-                                worker_func_name_ptr,
-                                send_ptr,
-                                len,
-                                Some(em_worker_callback_func),
-                                ptr::null_mut(),
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        panic!("{:?}", e);
-                    }
-                }
+        for worker_idx in 0..self.worker_count {
+            for tetris_idx in 0..self.tetris_count_per_worker {
+                send_event(
+                    ts::TetrisEvent::new(worker_idx, tetris_idx, events.clone()),
+                    worker_handles[worker_idx as usize],
+                );
             }
         }
     }
