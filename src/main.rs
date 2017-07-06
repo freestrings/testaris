@@ -29,7 +29,7 @@ const TARGET_RENDER_WIDTH: u32 = 360;
 const TARGET_RENDER_HEIGHT: u32 = 440;
 
 const WORKER_COUNT: u8 = 2;
-const TETRIS_COUNT: u8 = 100;
+const TETRIS_COUNT: u32 = 128; // (4 as u32).pow(4) / WORKER_COUNT;
 
 lazy_static!{
     static ref MESSAGE: Mutex<Vec<ts::Msg>> = Mutex::new(vec![]);
@@ -122,8 +122,7 @@ fn call_worker(handle: c_int, func_name: *const c_char, data: *mut c_char, len: 
     }
 }
 
-fn create_and_init_workers(worker_count: u8, tetris_count_per_worker: u8) -> Vec<c_int> {
-
+fn create_and_init_workers(worker_count: u8, tetris_count_per_worker: u32) -> Vec<c_int> {
     (0..worker_count)
         .map(|i| {
             let resource = CString::new("tetriscore.js").unwrap();
@@ -131,7 +130,13 @@ fn create_and_init_workers(worker_count: u8, tetris_count_per_worker: u8) -> Vec
             let func_name = CString::new("init_event").unwrap();
             let func_name = func_name.as_ptr();
 
-            let init_value: Vec<u8> = vec![i, tetris_count_per_worker];
+            let mut tetris_count: [u8; 4] =
+                unsafe { mem::transmute(tetris_count_per_worker.to_be()) };
+
+            let mut init_value: Vec<u8> = Vec::new();
+            init_value.push(i);
+            init_value.append(&mut tetris_count.to_vec());
+
             let len = init_value.len() as i32;
             let send_value = unsafe { CString::from_vec_unchecked(init_value) };
             let send_value = send_value.into_raw();
@@ -163,18 +168,54 @@ fn send_event(tetris_event: ts::TetrisEvent, handle: c_int) {
 
 struct Painter {
     ranges: Vec<ts::Rect>,
+    tetris_count: u32,
 }
 
-// 
+//
+//
 impl Painter {
     fn new(tetris: u32) -> Painter {
-        let count = (TARGET_RENDER_WIDTH * TARGET_RENDER_HEIGHT) / (WINDOW_WIDTH * WINDOW_HEIGHT);
-        let width = TARGET_RENDER_WIDTH / count;
-        let height = TARGET_RENDER_HEIGHT / count;
+        let tetris_count: u32 = WORKER_COUNT as u32 * TETRIS_COUNT;
+        let room_count = 2_u32.pow((tetris_count as f32).log(4.0) as u32);
+        let width = TARGET_RENDER_WIDTH / room_count;
+        let height = TARGET_RENDER_HEIGHT / room_count;
 
-        println!("{}, {}, {}", count, width, height);
+        println!(
+            "{}:{}, {}:{}",
+            width,
+            height,
+            width as f32 / ts::COLUMNS as f32,
+            height as f32 / ts::ROWS as f32
+        );
 
-        Painter { ranges: vec![] }
+        Painter {
+            ranges: vec![],
+            tetris_count: tetris_count,
+        }
+    }
+
+    fn create_texture<'a>(
+        &self,
+        texture_creator: &'a TextureCreator<WindowContext>,
+    ) -> Vec<Texture<'a>> {
+        (0..self.tetris_count).fold(Vec::new(), |mut textures, _| {
+            textures.push(
+                texture_creator
+                    .create_texture_target(None, WINDOW_WIDTH, WINDOW_HEIGHT)
+                    .unwrap(),
+            );
+            textures
+        })
+    }
+
+    fn paint(&self, message: ts::Msg, canvas: &mut Canvas<Window>, textures: &mut Vec<Texture>) {
+        let idx = message.worker_id as usize * TETRIS_COUNT as usize + message.tetris_id as usize;
+
+        canvas
+            .with_texture_canvas(&mut textures[idx], |texture_canvas| {
+                texture_canvas.clear();
+            })
+            .unwrap();
     }
 }
 
@@ -184,7 +225,8 @@ struct App<'a> {
     events: EventPump,
     worker_handles: Vec<c_int>,
     worker_count: u8,
-    tetris_count_per_worker: u8,
+    tetris_count_per_worker: u32,
+    painter: Painter,
 }
 
 impl<'a> App<'a> {
@@ -193,31 +235,22 @@ impl<'a> App<'a> {
         events: EventPump,
         texture_creator: &'a TextureCreator<WindowContext>,
         worker_count: u8,
-        tetris_count_per_worker: u8,
+        tetris_count_per_worker: u32,
     ) -> App {
-
-        let mut textures: Vec<Texture<'a>> = Vec::new();
-        for t in 0..(WORKER_COUNT * TETRIS_COUNT) {
-            textures.push(
-                texture_creator
-                    .create_texture_target(None, WINDOW_WIDTH, WINDOW_HEIGHT)
-                    .unwrap(),
-            );
-        }
-
-        Painter::new(WORKER_COUNT as u32 * TETRIS_COUNT as u32);
+        let painter = Painter::new(WORKER_COUNT as u32 * TETRIS_COUNT as u32);
 
         App {
             canvas: canvas,
-            textures: textures,
+            textures: painter.create_texture(texture_creator),
             events: events,
             worker_handles: create_and_init_workers(worker_count, tetris_count_per_worker),
             worker_count: worker_count,
             tetris_count_per_worker: tetris_count_per_worker,
+            painter: painter,
         }
     }
 
-    fn events(&mut self) -> HashSet<u8> {
+    fn events(&mut self) -> Vec<u8> {
         let mut events: HashSet<u8> = self.events
             .poll_iter()
             .map(|event| match event {
@@ -250,7 +283,7 @@ impl<'a> App<'a> {
             Err(_) => (),
         }
 
-        events
+        events.iter().map(|e| *e).collect()
     }
 
     fn handle_events(&mut self) {
@@ -259,8 +292,6 @@ impl<'a> App<'a> {
         if events.len() == 0 {
             return;
         }
-
-        let events: Vec<u8> = events.iter().map(|e| *e).collect();
 
         let ref worker_handles = self.worker_handles;
         for worker_idx in 0..self.worker_count {
@@ -282,7 +313,11 @@ impl<'a> App<'a> {
         let len = messages.len();
         while !messages.is_empty() {
             if let Some(message) = messages.pop() {
-                // println!("{}:{} -> {:?}", message.worker_id, message.tetris_id, message.points);
+                self.painter.paint(
+                    message,
+                    &mut self.canvas,
+                    &mut self.textures,
+                );
             }
         }
         println!("done: {}", len);

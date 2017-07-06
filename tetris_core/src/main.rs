@@ -92,7 +92,10 @@ pub fn init_event(data: *mut c_char, size: c_int) {
     log::debug(format!("init id: {:?}\0", init_value));
 
     let worker_index = init_value[0];
-    let tetris_count = init_value[1];
+    let mut tetris_count: u32 = (init_value[4] & 0xff) as u32;
+    tetris_count = tetris_count | ((init_value[3] & 0xff) as u32) << 8;
+    tetris_count = tetris_count | ((init_value[2] & 0xff) as u32) << 16;
+    tetris_count = tetris_count | ((init_value[1] & 0xff) as u32) << 24;
 
     if let Some(idx) = *IDX.lock().unwrap() {
         log::error(format!("already initialized: {}\0", idx));

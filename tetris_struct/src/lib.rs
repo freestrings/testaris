@@ -81,12 +81,12 @@ impl BlockEvent {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TetrisEvent {
     pub worker_id: u8,
-    pub tetris_idx: u8,
+    pub tetris_idx: u32,
     pub events: Vec<u8>,
 }
 
 impl TetrisEvent {
-    pub fn new(worker_id: u8, tetris_idx: u8, events: Vec<u8>) -> TetrisEvent {
+    pub fn new(worker_id: u8, tetris_idx: u32, events: Vec<u8>) -> TetrisEvent {
         TetrisEvent {
             worker_id: worker_id,
             tetris_idx: tetris_idx,
@@ -102,13 +102,13 @@ impl TetrisEvent {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Msg {
     pub worker_id: u8,
-    pub tetris_id: u8,
+    pub tetris_id: u32,
     pub points: Vec<Point>,
     pub grid: [[u8; COLUMNS as usize]; ROWS as usize],
 }
 
 impl Msg {
-    pub fn new(worker_id: u8, tetris_id: u8, points: Vec<Point>, grid: [[u8; COLUMNS as usize]; ROWS as usize]) -> Msg {
+    pub fn new(worker_id: u8, tetris_id: u32, points: Vec<Point>, grid: [[u8; COLUMNS as usize]; ROWS as usize]) -> Msg {
         Msg {
             worker_id: worker_id,
             tetris_id: tetris_id,
