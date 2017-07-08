@@ -2,6 +2,7 @@ extern crate emscripten_sys as asm;
 #[macro_use]
 extern crate lazy_static;
 extern crate libc;
+extern crate rand;
 extern crate serde_json;
 extern crate sdl2;
 extern crate tetris_struct as ts;
@@ -9,9 +10,11 @@ extern crate tetris_struct as ts;
 use std::ptr;
 use std::os::raw::{c_char, c_int, c_void};
 use std::ffi::CString;
-use std::collections::HashSet;
-use std::sync::Mutex;
+use std::collections::{HashSet, HashMap};
+use std::sync::{Mutex, MutexGuard};
 use std::mem;
+
+use rand::distributions::{IndependentSample, Range};
 
 use sdl2::EventPump;
 use sdl2::event::Event;
@@ -28,8 +31,8 @@ const WINDOW_HEIGHT: u32 = BORDER + ts::ROWS + BORDER;
 const TARGET_RENDER_WIDTH: u32 = 360;
 const TARGET_RENDER_HEIGHT: u32 = 440;
 
-const WORKER_COUNT: u8 = 2;
-const TETRIS_COUNT: u32 = 128; // (4 as u32).pow(4) / WORKER_COUNT;
+const WORKER_COUNT: u8 = 4;
+const TETRIS_COUNT: u32 = 64; // (4 as u32).pow(4) / WORKER_COUNT;
 
 lazy_static!{
     static ref MESSAGE: Mutex<Vec<ts::Msg>> = Mutex::new(vec![]);
@@ -53,9 +56,14 @@ extern "C" fn em_worker_callback_func(data: *mut c_char, size: c_int, _user_args
     let msg = String::from_utf8(raw_msg.to_vec()).unwrap();
     let msg: ts::Msg = serde_json::from_str(msg.as_str()).unwrap();
 
-    if msg.points.len() == 0 {
-        println!("empty");
-        return;
+    {
+
+        let ref points = msg.block.1;
+
+        if points.len() == 0 {
+            println!("empty");
+            return;
+        }
     }
 
     let mut messages = MESSAGE.lock().unwrap();
@@ -167,7 +175,10 @@ fn send_event(tetris_event: ts::TetrisEvent, handle: c_int) {
 }
 
 struct Painter {
-    ranges: Vec<ts::Rect>,
+    starts: Vec<ts::Point>,
+    width: u32,
+    height: u32,
+    scale: i32,
     tetris_count: u32,
 }
 
@@ -179,54 +190,98 @@ impl Painter {
         let room_count = 2_u32.pow((tetris_count as f32).log(4.0) as u32);
         let width = TARGET_RENDER_WIDTH / room_count;
         let height = TARGET_RENDER_HEIGHT / room_count;
+        let scale = width / ts::COLUMNS;
 
         println!(
-            "{}:{}, {}:{}",
+            "width: {} heigth:{}, room_count: {}, scale: {}",
             width,
             height,
-            width as f32 / ts::COLUMNS as f32,
-            height as f32 / ts::ROWS as f32
+            room_count,
+            scale,
         );
 
+        let mut w = 0;
+        let mut h = 0;
+        let mut starts: Vec<ts::Point> = Vec::new();
+
+        for _ in 0..room_count {
+            for _ in 0..room_count {
+                starts.push(ts::Point::new(w as i32, h as i32));
+                w += width;
+            }
+            w = 0;
+            h += height;
+        }
+
         Painter {
-            ranges: vec![],
+            starts: starts,
+            width: width,
+            height: height,
+            scale: scale as i32,
             tetris_count: tetris_count,
         }
     }
 
-    fn create_texture<'a>(
+    fn paint(
         &self,
-        texture_creator: &'a TextureCreator<WindowContext>,
-    ) -> Vec<Texture<'a>> {
-        (0..self.tetris_count).fold(Vec::new(), |mut textures, _| {
-            textures.push(
-                texture_creator
-                    .create_texture_target(None, WINDOW_WIDTH, WINDOW_HEIGHT)
-                    .unwrap(),
-            );
-            textures
-        })
-    }
+        messages: &HashMap<u32, ts::Msg>,
+        canvas: &mut Canvas<Window>,
+        texture: &mut Texture,
+    ) {
 
-    fn paint(&self, message: ts::Msg, canvas: &mut Canvas<Window>, textures: &mut Vec<Texture>) {
-        let idx = message.worker_id as usize * TETRIS_COUNT as usize + message.tetris_id as usize;
+        let between = Range::new(0, 2);
+        let mut rng = rand::thread_rng();
 
-        canvas
-            .with_texture_canvas(&mut textures[idx], |texture_canvas| {
-                texture_canvas.clear();
-            })
-            .unwrap();
+        // println!("{}", messages.len());
+
+        for idx in 0..messages.len() {
+
+            if let Some(message) = messages.get(&(idx as u32)) {
+
+                let ref start = self.starts[idx];
+                let (r, g, b) = message.block.0;
+                let ref points = message.block.1;
+
+                for point in points {
+                    if point.y() < 0 {
+                        continue;
+                    }
+
+                    let src = Some(Rect::new(point.x(), point.y(), 1, 1));
+                    let dst = Some(Rect::new(
+                        (start.x() + point.x() * self.scale),
+                        (start.y() + point.y() * self.scale),
+                        self.scale as u32,
+                        self.scale as u32,
+                    ));
+
+                    canvas
+                        .with_texture_canvas(texture, |texture_canvas| {
+                            texture_canvas.clear();
+                            texture_canvas.set_draw_color(Color::RGB(r, g, b));
+                            texture_canvas
+                                .draw_point(Point::new(point.x(), point.y()))
+                                .unwrap();
+                        })
+                        .unwrap();
+
+                    canvas.copy(texture, src, dst).unwrap();
+
+                }
+            }
+        }
     }
 }
 
 struct App<'a> {
     canvas: Canvas<Window>,
-    textures: Vec<Texture<'a>>,
+    texture: Texture<'a>,
     events: EventPump,
     worker_handles: Vec<c_int>,
     worker_count: u8,
     tetris_count_per_worker: u32,
     painter: Painter,
+    messages: HashMap<u32, ts::Msg>,
 }
 
 impl<'a> App<'a> {
@@ -238,15 +293,19 @@ impl<'a> App<'a> {
         tetris_count_per_worker: u32,
     ) -> App {
         let painter = Painter::new(WORKER_COUNT as u32 * TETRIS_COUNT as u32);
+        let texture = texture_creator
+            .create_texture_target(None, WINDOW_WIDTH, WINDOW_HEIGHT)
+            .unwrap();
 
         App {
             canvas: canvas,
-            textures: painter.create_texture(texture_creator),
+            texture: texture,
             events: events,
             worker_handles: create_and_init_workers(worker_count, tetris_count_per_worker),
             worker_count: worker_count,
             tetris_count_per_worker: tetris_count_per_worker,
             painter: painter,
+            messages: HashMap::new(),
         }
     }
 
@@ -306,21 +365,23 @@ impl<'a> App<'a> {
 
     fn handle_messages(&mut self) {
         let mut messages = MESSAGE.lock().unwrap();
+
         if messages.is_empty() {
             return;
         }
 
-        let len = messages.len();
         while !messages.is_empty() {
             if let Some(message) = messages.pop() {
-                self.painter.paint(
-                    message,
-                    &mut self.canvas,
-                    &mut self.textures,
-                );
+                let idx = message.worker_id as u32 * TETRIS_COUNT + message.tetris_id;
+                self.messages.insert(idx, message);
             }
         }
-        println!("done: {}", len);
+
+        self.painter.paint(
+            &self.messages,
+            &mut self.canvas,
+            &mut self.texture,
+        );
     }
 
     fn run(&mut self) {

@@ -112,7 +112,7 @@ pub fn init_event(data: *mut c_char, size: c_int) {
     let msg = Msg::new(
         (*IDX.lock().unwrap()).unwrap(),
         0, // No meaning
-        vec![],
+        ((0, 0, 0), vec![]),
         [[0_u8; COLUMNS as usize]; ROWS as usize],
     );
 
@@ -176,7 +176,7 @@ pub fn on_event(tetris_event: TetrisEvent) -> Msg {
     Msg::new(
         tetris_event.worker_id,
         tetris_event.tetris_idx,
-        points,
+        (block.type_ref().color(), points),
         [[0_u8; COLUMNS as usize]; ROWS as usize],
     )
 }

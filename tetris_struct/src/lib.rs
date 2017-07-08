@@ -103,16 +103,21 @@ impl TetrisEvent {
 pub struct Msg {
     pub worker_id: u8,
     pub tetris_id: u32,
-    pub points: Vec<Point>,
+    pub block: ((u8, u8, u8), Vec<Point>),
     pub grid: [[u8; COLUMNS as usize]; ROWS as usize],
 }
 
 impl Msg {
-    pub fn new(worker_id: u8, tetris_id: u32, points: Vec<Point>, grid: [[u8; COLUMNS as usize]; ROWS as usize]) -> Msg {
+    pub fn new(
+        worker_id: u8,
+        tetris_id: u32,
+        block: ((u8, u8, u8), Vec<Point>),
+        grid: [[u8; COLUMNS as usize]; ROWS as usize],
+    ) -> Msg {
         Msg {
             worker_id: worker_id,
             tetris_id: tetris_id,
-            points: points,
+            block: block,
             grid: grid,
         }
     }
