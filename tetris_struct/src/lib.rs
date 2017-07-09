@@ -101,20 +101,23 @@ impl TetrisEvent {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Msg {
+    pub event_name: String,
     pub worker_id: u8,
     pub tetris_id: u32,
-    pub block: ((u8, u8, u8), Vec<Point>),
+    pub block: ((u8, u8, u8), Rect, Vec<Point>),
     pub grid: [[u8; COLUMNS as usize]; ROWS as usize],
 }
 
 impl Msg {
     pub fn new(
+        event_name: String,
         worker_id: u8,
         tetris_id: u32,
-        block: ((u8, u8, u8), Vec<Point>),
+        block: ((u8, u8, u8), Rect, Vec<Point>),
         grid: [[u8; COLUMNS as usize]; ROWS as usize],
     ) -> Msg {
         Msg {
+            event_name: event_name,
             worker_id: worker_id,
             tetris_id: tetris_id,
             block: block,
@@ -127,7 +130,7 @@ impl Msg {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Point {
     x: i32,
     y: i32,
@@ -147,7 +150,7 @@ impl Point {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Rect {
     x: i32,
     y: i32,

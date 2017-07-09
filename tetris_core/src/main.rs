@@ -47,9 +47,9 @@ mod log {
     use super::asm;
 
     pub fn debug<T>(msg: T) {
-        // unsafe {
-        //     asm::emscripten_log(asm::EM_LOG_CONSOLE as i32, msg);
-        // }
+        unsafe {
+            asm::emscripten_log(asm::EM_LOG_CONSOLE as i32, msg);
+        }
     }
 
     pub fn error<T>(msg: T) {
@@ -70,6 +70,8 @@ fn send_back(msg: Msg) {
     match msg.to_json() {
         Ok(json) => {
 
+            // log::debug(format!("json: {}\0", json));
+
             let send_back = CString::new(json).unwrap();
             let send_back_ptr = send_back.into_raw();
             let len = unsafe { libc::strlen(send_back_ptr) as i32 };
@@ -84,35 +86,71 @@ fn send_back(msg: Msg) {
     }
 }
 
+fn worker_guard(worker_id: u8) -> bool {
+    match *IDX.lock().unwrap() {
+        Some(ref idx) => worker_id.ne(idx),
+        None => true,
+    }
+}
+
 #[no_mangle]
-pub fn init_event(data: *mut c_char, size: c_int) {
+pub fn init_worker(data: *mut c_char, size: c_int) {
 
     let init_value = into_raw(data, size);
 
-    log::debug(format!("init id: {:?}\0", init_value));
-
     let worker_index = init_value[0];
     let mut tetris_count: u32 = (init_value[4] & 0xff) as u32;
-    tetris_count = tetris_count | ((init_value[3] & 0xff) as u32) << 8;
-    tetris_count = tetris_count | ((init_value[2] & 0xff) as u32) << 16;
-    tetris_count = tetris_count | ((init_value[1] & 0xff) as u32) << 24;
+    tetris_count |= ((init_value[3] & 0xff) as u32) << 8;
+    tetris_count |= ((init_value[2] & 0xff) as u32) << 16;
+    tetris_count |= ((init_value[1] & 0xff) as u32) << 24;
 
     if let Some(idx) = *IDX.lock().unwrap() {
         log::error(format!("already initialized: {}\0", idx));
         return;
     }
 
+    log::debug(format!("worker id: {:?}\0", worker_index));
+    log::debug(format!("tetris_count: {:?}\0", tetris_count));
+
     *IDX.lock().unwrap() = Some(worker_index);
 
-    let mut tetris_ref = TETRIS.lock().unwrap();
     for i in 0..tetris_count {
-        tetris_ref.push(Tetris::new());
+        TETRIS.lock().unwrap().push(Tetris::new());
     }
 
     let msg = Msg::new(
-        (*IDX.lock().unwrap()).unwrap(),
-        0, // No meaning
-        ((0, 0, 0), vec![]),
+        String::from("init_worker"),
+        worker_index,
+        //<-- ;;;
+        0,
+        ((0, 0, 0), Rect::new(0, 0, 0, 0), Vec::new()),
+        [[0_u8; COLUMNS as usize]; ROWS as usize],
+            //-->
+    );
+
+    send_back(msg);
+}
+
+#[no_mangle]
+pub fn init_tetris(data: *mut c_char, size: c_int) {
+    let raw_event = into_raw(data, size);
+    let tetris_event = String::from_utf8(raw_event.to_vec()).unwrap();
+    let tetris_event: TetrisEvent = serde_json::from_str(tetris_event.as_str()).unwrap();
+
+    if worker_guard(tetris_event.worker_id) {
+        return;
+    }
+
+    let ref mut tetris = TETRIS.lock().unwrap()[tetris_event.tetris_idx as usize];
+    let ref mut block = tetris.block;
+
+    block.align_to_start();
+
+    let msg = Msg::new(
+        String::from("init_tetris"),
+        tetris_event.worker_id,
+        tetris_event.tetris_idx,
+        (block.type_ref().color(), block.range(), block.get_points()),
         [[0_u8; COLUMNS as usize]; ROWS as usize],
     );
 
@@ -125,19 +163,14 @@ pub fn post_event(data: *mut c_char, size: c_int) {
     let tetris_event = String::from_utf8(raw_event.to_vec()).unwrap();
     let tetris_event: TetrisEvent = serde_json::from_str(tetris_event.as_str()).unwrap();
 
-    let is_match = match *IDX.lock().unwrap() {
-        Some(ref idx) => tetris_event.worker_id.ne(idx),
-        None => true,
-    };
-
-    if is_match {
+    if worker_guard(tetris_event.worker_id) {
         return;
     }
 
     send_back(on_event(tetris_event));
 }
 
-pub fn on_event(tetris_event: TetrisEvent) -> Msg {
+pub fn on_event<'a>(tetris_event: TetrisEvent) -> Msg {
     log::debug(format!("tetris_event {:?}\0", tetris_event));
 
     let tetris_idx = tetris_event.tetris_idx as usize;
@@ -167,16 +200,11 @@ pub fn on_event(tetris_event: TetrisEvent) -> Msg {
         block.check_bottom_bound(&range);
     }
 
-    let points = block
-        .get_points_ref()
-        .iter()
-        .map(|point| Point::new(point.x(), point.y()))
-        .collect();
-
     Msg::new(
+        String::from("post_event"),
         tetris_event.worker_id,
         tetris_event.tetris_idx,
-        (block.type_ref().color(), points),
+        (block.type_ref().color(), block.range(), block.get_points()),
         [[0_u8; COLUMNS as usize]; ROWS as usize],
     )
 }
@@ -283,7 +311,7 @@ impl Block {
             self.align_to_start();
             self.load_next();
         } else {
-            panic!("Does not loaded the next block.");
+            panic!("Fail to load the next block.");
         }
     }
 
@@ -310,6 +338,10 @@ impl Block {
 
     fn get_points_ref(&self) -> &Points {
         &self.points
+    }
+
+    fn get_points(&self) -> Points {
+        self.points.clone()
     }
 
     fn update(&mut self, target_points: &mut Points) {
