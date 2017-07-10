@@ -2,7 +2,6 @@ extern crate emscripten_sys as asm;
 #[macro_use]
 extern crate lazy_static;
 extern crate libc;
-extern crate rand;
 extern crate serde_json;
 extern crate tetris_struct;
 
@@ -17,12 +16,10 @@ use std::slice;
 
 use tetris_struct::*;
 
-use rand::distributions::{IndependentSample, Range};
-
-fn main() {}
-
 type Points = Vec<Point>;
 type Color = (u8, u8, u8);
+
+fn main() {}
 
 lazy_static!{
     static ref TETRIS: Mutex<Vec<Tetris>> = Mutex::new(vec![]);
@@ -123,7 +120,7 @@ pub fn init_worker(data: *mut c_char, size: c_int) {
         worker_index,
         //<-- ;;;
         0,
-        ((0, 0, 0), Rect::new(0, 0, 0, 0), Vec::new()),
+        (BlockType::random(), Vec::new(), BlockType::random()),
         [[0_u8; COLUMNS as usize]; ROWS as usize],
             //-->
     );
@@ -146,11 +143,15 @@ pub fn init_tetris(data: *mut c_char, size: c_int) {
 
     block.align_to_start();
 
+    if block.next_ref().is_none() {
+        block.load_next();
+    }
+
     let msg = Msg::new(
         String::from("init_tetris"),
         tetris_event.worker_id,
         tetris_event.tetris_idx,
-        (block.type_ref().color(), block.range(), block.get_points()),
+        (block.type_ref().clone(), block.type_ref().points(), BlockType::new(0)),
         [[0_u8; COLUMNS as usize]; ROWS as usize],
     );
 
@@ -171,7 +172,7 @@ pub fn post_event(data: *mut c_char, size: c_int) {
 }
 
 pub fn on_event<'a>(tetris_event: TetrisEvent) -> Msg {
-    log::debug(format!("tetris_event {:?}\0", tetris_event));
+//    log::debug(format!("tetris_event {:?}\0", tetris_event));
 
     let tetris_idx = tetris_event.tetris_idx as usize;
 
@@ -200,85 +201,19 @@ pub fn on_event<'a>(tetris_event: TetrisEvent) -> Msg {
         block.check_bottom_bound(&range);
     }
 
+    let next_type = if let &Some(ref block) = block.next_ref() {
+        block.type_ref().clone()
+    } else {
+        panic!("Can not read the next block type");
+    };
+
     Msg::new(
         String::from("post_event"),
         tetris_event.worker_id,
         tetris_event.tetris_idx,
-        (block.type_ref().color(), block.range(), block.get_points()),
+        (block.type_ref().clone(), block.get_points(), next_type),
         [[0_u8; COLUMNS as usize]; ROWS as usize],
     )
-}
-
-#[derive(Clone, Debug, PartialEq)]
-enum BlockType {
-    T,
-    J,
-    L,
-    S,
-    Z,
-    O,
-    I,
-}
-
-impl BlockType {
-    fn new(index: u8) -> BlockType {
-        match index {
-            1 => BlockType::T,
-            2 => BlockType::J,
-            3 => BlockType::L,
-            4 => BlockType::S,
-            5 => BlockType::Z,
-            6 => BlockType::O,
-            7 => BlockType::I,
-            _ => BlockType::T,
-        }
-    }
-
-    fn random() -> BlockType {
-        let mut rng = rand::thread_rng();
-        let between = Range::new(1, 8);
-        BlockType::new(between.ind_sample(&mut rng))
-    }
-
-    fn index(&self) -> u8 {
-        match *self {
-            BlockType::T => 1,
-            BlockType::J => 2,
-            BlockType::L => 3,
-            BlockType::S => 4,
-            BlockType::Z => 5,
-            BlockType::O => 6,
-            BlockType::I => 7,
-        }
-    }
-
-    fn color(&self) -> (u8, u8, u8) {
-        match *self {
-            BlockType::T => COLOR_PURPLE,
-            BlockType::J => COLOR_BLUE,
-            BlockType::L => COLOR_ORANGE,
-            BlockType::S => COLOR_LIME,
-            BlockType::Z => COLOR_RED,
-            BlockType::O => COLOR_YELLOW,
-            BlockType::I => COLOR_CYAN,
-        }
-    }
-
-    fn points(&self) -> Points {
-        match *self {
-            BlockType::T => BLOCK_T,
-            BlockType::J => BLOCK_J,
-            BlockType::L => BLOCK_L,
-            BlockType::S => BLOCK_S,
-            BlockType::Z => BLOCK_Z,
-            BlockType::O => BLOCK_O,
-            BlockType::I => BLOCK_I,
-        }.iter()
-            .map(|raw_point| {
-                Point::new(raw_point.0 as i32, raw_point.1 as i32)
-            })
-            .collect()
-    }
 }
 
 struct Block {
@@ -311,7 +246,7 @@ impl Block {
             self.align_to_start();
             self.load_next();
         } else {
-            panic!("Fail to load the next block.");
+            panic!("Can not apply a next block!");
         }
     }
 
@@ -326,6 +261,10 @@ impl Block {
                 range.height() as i32 * -1,
             )
         });
+    }
+
+    fn next_ref(&self) -> &Option<Box<Block>> {
+        &self.next
     }
 
     fn type_ref(&self) -> &BlockType {

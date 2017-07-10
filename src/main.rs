@@ -22,11 +22,11 @@ use sdl2::render::{Canvas, Texture, TextureCreator, WindowCanvas};
 use sdl2::video::{Window, WindowContext};
 
 const BORDER: u32 = 1;
-const RIGHT_PANEL: u32 = 5;
+const RIGHT_PANEL: u32 = 9;
 const MAIN_WIDTH: u32 = BORDER + ts::COLUMNS + BORDER;
 const WINDOW_WIDTH: u32 = MAIN_WIDTH + RIGHT_PANEL + BORDER;
 const WINDOW_HEIGHT: u32 = BORDER + ts::ROWS + BORDER;
-const TARGET_RENDER_WIDTH: u32 = 360;
+const TARGET_RENDER_WIDTH: u32 = 440;
 const TARGET_RENDER_HEIGHT: u32 = 440;
 
 const WORKER_COUNT: u8 = 1;
@@ -85,7 +85,7 @@ fn main() {
     let video_subsystem = sdl_context.video().unwrap();
 
     let window = video_subsystem
-        .window("Tetris", TARGET_RENDER_WIDTH, TARGET_RENDER_WIDTH)
+        .window("Tetris", TARGET_RENDER_WIDTH, TARGET_RENDER_HEIGHT)
         .build()
         .unwrap();
     let canvas: WindowCanvas = window
@@ -235,13 +235,12 @@ impl Painter {
     }
 
     fn paint_main(&self, message: &ts::Msg, canvas: &mut Canvas<Window>) {
-        let (r, g, b) = message.block.0;
-        let ref range = message.block.1;
-        let ref points = message.block.2;
+        let (r, g, b) = message.block.0.color();
+        let ref points = message.block.1;
 
         let points: Vec<Point> = points.iter()
             .map(|point| {
-                Point::new(point.x() - range.x(), point.y() - range.y())
+                Point::new(point.x(), point.y())
             })
             .collect();
 
@@ -250,8 +249,20 @@ impl Painter {
     }
 
     fn paint_scoreboard(&self, message: &ts::Msg, canvas: &mut Canvas<Window>) {
-        canvas.set_draw_color(Color::RGB(128, 0, 128));
-        canvas.draw_rect(Rect::new(MAIN_WIDTH as i32, 0, WINDOW_WIDTH - MAIN_WIDTH, WINDOW_HEIGHT)).unwrap();
+        let ref next_block_type = message.block.2;
+        let (r, g, b) = next_block_type.color();
+        let points = next_block_type.points();
+
+        let points: Vec<Point> = points.iter()
+            .map(|point| {
+                Point::new(point.x() + 2 + MAIN_WIDTH as i32, point.y() + 1)
+            })
+            .collect();
+
+        canvas.set_draw_color(Color::RGB(10, 10, 10));
+        canvas.fill_rect(Rect::new(MAIN_WIDTH as i32, 0, WINDOW_WIDTH - MAIN_WIDTH, WINDOW_HEIGHT)).unwrap();
+        canvas.set_draw_color(Color::RGB(r, g, b));
+        canvas.draw_points(points.as_slice()).unwrap();
     }
 
     fn paint(
@@ -265,21 +276,6 @@ impl Painter {
         for idx in 0..messages.len() {
             if let Some(message) = messages.get(&(idx as u32)) {
                 let ref start = self.starts[idx];
-                let ref range = message.block.1;
-
-                let src = Some(Rect::new(
-                    range.x(),
-                    range.y(),
-                    range.width(),
-                    range.height(),
-                ));
-
-                let dst = Some(Rect::new(
-                    (start.x() + range.x() * self.scale),
-                    (start.y() + range.y() * self.scale),
-                    range.width() * self.scale as u32,
-                    range.height() * self.scale as u32,
-                ));
 
                 canvas.with_texture_canvas(texture, |texture_canvas| {
                     texture_canvas.set_draw_color(Color::RGB(0, 0, 0));
@@ -288,7 +284,17 @@ impl Painter {
                     self.paint_scoreboard(&message, texture_canvas);
                 }).unwrap();
 
-                canvas.copy(texture, src, dst).unwrap();
+                canvas.copy(texture, Some(Rect::new(
+                    0,
+                    0,
+                    WINDOW_WIDTH,
+                    WINDOW_HEIGHT,
+                )), Some(Rect::new(
+                    start.x(),
+                    start.y(),
+                    WINDOW_WIDTH * self.scale as u32,
+                    WINDOW_HEIGHT * self.scale as u32,
+                ))).unwrap();
             }
         }
     }

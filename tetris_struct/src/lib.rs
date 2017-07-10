@@ -1,6 +1,12 @@
+extern crate rand;
 #[macro_use]
 extern crate serde_derive;
 extern crate serde_json;
+
+use rand::distributions::{IndependentSample, Range};
+
+type Points = Vec<Point>;
+type Color = (u8, u8, u8);
 
 //
 //    #
@@ -43,6 +49,78 @@ pub const COLOR_CYAN: (u8, u8, u8) = (0, 255, 255);
 pub const COLOR_BLACK: (u8, u8, u8) = (0, 0, 0);
 
 pub const DEFAULT_GRAVITY: u8 = 20;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum BlockType {
+    T,
+    J,
+    L,
+    S,
+    Z,
+    O,
+    I,
+}
+
+impl BlockType {
+    pub fn new(index: u8) -> BlockType {
+        match index {
+            1 => BlockType::T,
+            2 => BlockType::J,
+            3 => BlockType::L,
+            4 => BlockType::S,
+            5 => BlockType::Z,
+            6 => BlockType::O,
+            7 => BlockType::I,
+            _ => BlockType::T,
+        }
+    }
+
+    pub fn random() -> BlockType {
+        let mut rng = rand::thread_rng();
+        let between = Range::new(1, 8);
+        BlockType::new(between.ind_sample(&mut rng))
+    }
+
+    pub fn index(&self) -> u8 {
+        match *self {
+            BlockType::T => 1,
+            BlockType::J => 2,
+            BlockType::L => 3,
+            BlockType::S => 4,
+            BlockType::Z => 5,
+            BlockType::O => 6,
+            BlockType::I => 7,
+        }
+    }
+
+    pub fn color(&self) -> (u8, u8, u8) {
+        match *self {
+            BlockType::T => COLOR_PURPLE,
+            BlockType::J => COLOR_BLUE,
+            BlockType::L => COLOR_ORANGE,
+            BlockType::S => COLOR_LIME,
+            BlockType::Z => COLOR_RED,
+            BlockType::O => COLOR_YELLOW,
+            BlockType::I => COLOR_CYAN,
+        }
+    }
+
+    pub fn points(&self) -> Points {
+        match *self {
+            BlockType::T => BLOCK_T,
+            BlockType::J => BLOCK_J,
+            BlockType::L => BLOCK_L,
+            BlockType::S => BLOCK_S,
+            BlockType::Z => BLOCK_Z,
+            BlockType::O => BLOCK_O,
+            BlockType::I => BLOCK_I,
+        }.iter()
+            .map(|raw_point| {
+                Point::new(raw_point.0 as i32, raw_point.1 as i32)
+            })
+            .collect()
+    }
+}
 
 #[derive(PartialEq, Eq, Hash)]
 pub enum BlockEvent {
@@ -104,7 +182,7 @@ pub struct Msg {
     pub event_name: String,
     pub worker_id: u8,
     pub tetris_id: u32,
-    pub block: ((u8, u8, u8), Rect, Vec<Point>),
+    pub block: (BlockType/*current*/, Vec<Point>/*current*/, BlockType/*next*/),
     pub grid: [[u8; COLUMNS as usize]; ROWS as usize],
 }
 
@@ -113,7 +191,7 @@ impl Msg {
         event_name: String,
         worker_id: u8,
         tetris_id: u32,
-        block: ((u8, u8, u8), Rect, Vec<Point>),
+        block: (BlockType/*current*/, Vec<Point>/*current*/, BlockType/*next*/),
         grid: [[u8; COLUMNS as usize]; ROWS as usize],
     ) -> Msg {
         Msg {
