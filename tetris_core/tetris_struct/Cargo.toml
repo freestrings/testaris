@@ -1,6 +1,0 @@
-[package]
-name = "tetris_struct"
-version = "0.1.0"
-authors = ["freestrings <freestrings@gmail.com>"]
-
-[dependencies]

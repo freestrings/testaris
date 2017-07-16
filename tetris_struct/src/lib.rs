@@ -6,7 +6,8 @@ extern crate serde_json;
 use rand::distributions::{IndependentSample, Range};
 
 type Points = Vec<Point>;
-type Color = (u8, u8, u8);
+type Block = (BlockType/*current*/, Vec<Point>/*current*/, Option<BlockType>/*next*/);
+type Grid = [[u8; COLUMNS as usize]; ROWS as usize];
 
 //
 //    #
@@ -50,7 +51,7 @@ pub const COLOR_BLACK: (u8, u8, u8) = (0, 0, 0);
 
 pub const DEFAULT_GRAVITY: u8 = 20;
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum BlockType {
     T,
     J,
@@ -122,7 +123,7 @@ impl BlockType {
     }
 }
 
-#[derive(PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BlockEvent {
     Left,
     Right,
@@ -132,46 +133,15 @@ pub enum BlockEvent {
     None,
 }
 
-impl BlockEvent {
-    pub fn from_event(evt: u8) -> BlockEvent {
-        match evt {
-            1 => BlockEvent::Left,
-            2 => BlockEvent::Right,
-            3 => BlockEvent::Down,
-            4 => BlockEvent::Drop,
-            5 => BlockEvent::Rotate,
-            _ => BlockEvent::None,
-        }
-    }
-
-    pub fn to_block_event(&self) -> u8 {
-        match *self {
-            BlockEvent::Left => 1,
-            BlockEvent::Right => 2,
-            BlockEvent::Down => 3,
-            BlockEvent::Drop => 4,
-            BlockEvent::Rotate => 5,
-            _ => 6,
-        }
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize)]
-pub struct TetrisEvent {
-    pub worker_id: u8,
-    pub tetris_idx: u32,
-    pub events: Vec<u8>,
+pub enum TetrisEvent {
+    InitWorker(u8/*worker index*/, u32/*tetris count*/),
+    InitTetris(u8/*worker index*/, u32/*tetris id*/),
+    TickEvent(u8/*worker index*/, u32/*tetris id*/),
+    UserEvent(u8/*worker index*/, u32/*tetris id*/, Vec<BlockEvent>),
 }
 
 impl TetrisEvent {
-    pub fn new(worker_id: u8, tetris_idx: u32, events: Vec<u8>) -> TetrisEvent {
-        TetrisEvent {
-            worker_id: worker_id,
-            tetris_idx: tetris_idx,
-            events: events,
-        }
-    }
-
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(&self)
     }
@@ -179,28 +149,14 @@ impl TetrisEvent {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Msg {
-    pub event_name: String,
-    pub worker_id: u8,
-    pub tetris_id: u32,
-    pub block: (BlockType/*current*/, Vec<Point>/*current*/, BlockType/*next*/),
-    pub grid: [[u8; COLUMNS as usize]; ROWS as usize],
+    pub event: TetrisEvent,
+    pub block: Option<Block>,
+    pub grid: Option<Grid>,
 }
 
 impl Msg {
-    pub fn new(
-        event_name: String,
-        worker_id: u8,
-        tetris_id: u32,
-        block: (BlockType/*current*/, Vec<Point>/*current*/, BlockType/*next*/),
-        grid: [[u8; COLUMNS as usize]; ROWS as usize],
-    ) -> Msg {
-        Msg {
-            event_name: event_name,
-            worker_id: worker_id,
-            tetris_id: tetris_id,
-            block: block,
-            grid: grid,
-        }
+    pub fn new(event: TetrisEvent, block: Option<Block>, grid: Option<Grid>) -> Msg {
+        Msg { event: event, block: block, grid: grid }
     }
 
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
@@ -238,12 +194,7 @@ pub struct Rect {
 
 impl Rect {
     pub fn new(x: i32, y: i32, width: u32, height: u32) -> Rect {
-        Rect {
-            x: x,
-            y: y,
-            width: width,
-            height: height,
-        }
+        Rect { x: x, y: y, width: width, height: height }
     }
 
     pub fn x(&self) -> i32 {
