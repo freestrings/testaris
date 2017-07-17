@@ -137,8 +137,8 @@ pub enum BlockEvent {
 pub enum TetrisEvent {
     InitWorker(u8/*worker index*/, u32/*tetris count*/),
     InitTetris(u8/*worker index*/, u32/*tetris id*/),
-    TickEvent(u8/*worker index*/, u32/*tetris id*/),
-    UserEvent(u8/*worker index*/, u32/*tetris id*/, Vec<BlockEvent>),
+    Tick(u8/*worker index*/, u32/*tetris id*/),
+    User(u8/*worker index*/, u32/*tetris id*/, Vec<BlockEvent>),
 }
 
 impl TetrisEvent {

@@ -26,29 +26,24 @@ lazy_static! {
 }
 
 struct Ticker {
-    base: SystemTime,
-    remain_subsec_nanos: f64,
+    fact: u32,
+    elapsed: u32,
 }
 
 impl Ticker {
-    pub fn new() -> Ticker {
-        Ticker { base: SystemTime::now(), remain_subsec_nanos: 0.0 }
+    pub fn new(fact: u32) -> Ticker {
+        Ticker { fact: fact, elapsed: 0 }
     }
 
-    pub fn tick(&mut self) -> u64 {
-        let duration = self.base.elapsed().unwrap_or(Duration::new(0, 0));
-        self.base = SystemTime::now();
-        self.remain_subsec_nanos += duration.subsec_nanos() as f64;
-        let factor = 0.7_f64;
-        let sec = self.remain_subsec_nanos / (1_000_000_000.0 * factor);
-        let amount = if sec >= 1.0 {
-            self.remain_subsec_nanos -= sec * 1_000_000_000.0 * factor;
-            duration.as_secs() as f64 * factor + sec
-        } else {
-            duration.as_secs() as f64 * factor
-        };
+    pub fn tick(&mut self) -> bool {
+        self.elapsed += 1;
 
-        return amount.round() as u64;
+        if self.elapsed >= self.fact {
+            self.elapsed = 0;
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -63,7 +58,7 @@ impl Tetris {
         Tetris {
             block: Block::new(BlockType::random()),
             grid: Grid::new(),
-            ticker: Ticker::new(),
+            ticker: Ticker::new(50),
         }
     }
 }
@@ -72,24 +67,32 @@ mod log {
     use super::asm;
 
     pub fn debug<T>(msg: T) {
-        unsafe { asm::emscripten_log(asm::EM_LOG_CONSOLE as i32, msg); }
+        unsafe {
+            asm::emscripten_log(asm::EM_LOG_CONSOLE as i32, msg);
+        }
     }
 
     pub fn error<T>(msg: T) {
-        unsafe { asm::emscripten_log(asm::EM_LOG_ERROR as i32, msg); }
+        unsafe {
+            asm::emscripten_log(asm::EM_LOG_ERROR as i32, msg);
+        }
     }
 }
 
 fn into_raw<'a>(data: *mut c_char, size: c_int) -> &'a [u8] {
-    unsafe { mem::transmute(slice::from_raw_parts(data, size as usize)) }
+    unsafe {
+        mem::transmute(slice::from_raw_parts(data, size as usize))
+    }
 }
 
 fn send_back(msg: Msg) {
     let json = msg.to_json().expect("Error\0");
     let send_back = CString::new(json).unwrap();
-    let send_back_ptr = send_back.into_raw();
-    let len = unsafe { libc::strlen(send_back_ptr) as i32 };
-    unsafe { asm::emscripten_worker_respond(send_back_ptr, len + 1); }
+    let send_back = send_back.into_raw();
+    let len = unsafe { libc::strlen(send_back) as i32 };
+    unsafe {
+        asm::emscripten_worker_respond(send_back, len + 1);
+    }
 }
 
 fn worker_guard(worker_id: u8) -> bool {
@@ -101,13 +104,21 @@ fn worker_guard(worker_id: u8) -> bool {
 
 #[no_mangle]
 pub fn on(data: *mut c_char, size: c_int) {
-    let raw_event = into_raw(data, size);
-    let tetris_event = String::from_utf8(raw_event.to_vec()).unwrap();
+    let tetris_event = String::from_utf8(into_raw(data, size).to_vec()).unwrap();
+
     match serde_json::from_str(tetris_event.as_str()).unwrap() {
-        TetrisEvent::InitWorker(worker_index, tetris_count) => init_worker(worker_index, tetris_count),
-        TetrisEvent::InitTetris(worker_index, tetris_index) => init_tetris(worker_index, tetris_index),
-        TetrisEvent::TickEvent(worker_index, tetris_index) => tick_event(worker_index, tetris_index),
-        TetrisEvent::UserEvent(worker_index, tetris_index, block_event) => user_event(worker_index, tetris_index, block_event),
+        TetrisEvent::InitWorker(worker_index, tetris_count) => {
+            init_worker(worker_index, tetris_count)
+        }
+        TetrisEvent::InitTetris(worker_index, tetris_index) => {
+            init_tetris(worker_index, tetris_index)
+        }
+        TetrisEvent::Tick(worker_index, tetris_index) => {
+            tick_event(worker_index, tetris_index)
+        }
+        TetrisEvent::User(worker_index, tetris_index, block_event) => {
+            user_event(worker_index, tetris_index, block_event)
+        }
     }
 }
 
@@ -117,17 +128,14 @@ pub fn init_worker(worker_index: u8, tetris_count: u32) {
         return;
     }
 
-    log::debug(format!("worker id: {:?}\0", worker_index));
-    log::debug(format!("tetris_count: {:?}\0", tetris_count));
-
     *IDX.lock().unwrap() = Some(worker_index);
 
     for _ in 0..tetris_count {
         TETRIS.lock().unwrap().push(Tetris::new());
     }
 
-    let tetris_event = TetrisEvent::InitWorker(worker_index, tetris_count);
-    send_back(Msg::new(tetris_event, None, None));
+    let event = TetrisEvent::InitWorker(worker_index, tetris_count);
+    send_back(Msg::new(event, None, None));
 }
 
 pub fn init_tetris(worker_index: u8, tetris_index: u32) {
@@ -144,8 +152,13 @@ pub fn init_tetris(worker_index: u8, tetris_index: u32) {
         block.load_next();
     }
 
-    let tetris_event = TetrisEvent::InitTetris(worker_index, tetris_index);
-    send_back(Msg::new(tetris_event, Some(block.to_msg()), None));
+    send_back(
+        Msg::new(
+            TetrisEvent::InitTetris(worker_index, tetris_index),
+            Some(block.to_msg()),
+            None
+        )
+    );
 }
 
 pub fn tick_event(worker_index: u8, tetris_index: u32) {
@@ -157,14 +170,18 @@ pub fn tick_event(worker_index: u8, tetris_index: u32) {
     let ref mut ticker = tetris.ticker;
     let ref mut block = tetris.block;
     let ref mut grid = tetris.grid;
-    let tick = ticker.tick();
 
-    for _ in 0..tick {
+    if ticker.tick() {
         block.down(|points| !grid.is_empty(points));
     }
 
-    let tetris_event = TetrisEvent::TickEvent(worker_index, tetris_index);
-    send_back(Msg::new(tetris_event, Some(block.to_msg()), None));
+    send_back(
+        Msg::new(
+            TetrisEvent::Tick(worker_index, tetris_index),
+            Some(block.to_msg()),
+            None
+        )
+    );
 }
 
 pub fn user_event(worker_index: u8, tetris_index: u32, block_events: Vec<BlockEvent>) {
@@ -194,8 +211,13 @@ pub fn user_event(worker_index: u8, tetris_index: u32, block_events: Vec<BlockEv
         block.adjust_bound();
     }
 
-    let tetris_event = TetrisEvent::UserEvent(worker_index, tetris_index, Vec::new());
-    send_back(Msg::new(tetris_event, Some(block.to_msg()), None));
+    send_back(
+        Msg::new(
+            TetrisEvent::User(worker_index, tetris_index, Vec::new()),
+            Some(block.to_msg()),
+            None
+        )
+    );
 }
 
 struct Block {
@@ -209,6 +231,7 @@ impl Block {
     fn new(block_type: BlockType) -> Block {
         let points = block_type.points();
         let color = block_type.color();
+
         Block {
             block_type: block_type,
             points: points,
@@ -222,23 +245,16 @@ impl Block {
     }
 
     fn apply_next(&mut self) {
-        if let Some(block) = self.next.take() {
-            self.block_type = block.block_type.clone();
-            self.color = block.color;
-            self.align_to_start();
-            self.load_next();
-        } else {
-            panic!("Can not apply a next block!");
-        }
+        let block = self.next.take().expect("Can not apply a next block!");
+        self.block_type = block.block_type.clone();
+        self.color = block.color;
+        self.align_to_start();
+        self.load_next();
     }
 
-    // 다른 곳으로 옮김
     fn align_to_start(&mut self) {
-        let points: Points = self.block_type.points();
         let range = self.range();
-        let center = range.width() / 2;
-
-        let x = (COLUMNS / 2) as i32 - center as i32;
+        let x = (COLUMNS / 2 - range.width() / 2) as i32;
         let y = range.height() as i32 * -1;
         self.shift(|| (x, y));
     }
@@ -354,12 +370,9 @@ impl Block {
             if b.y().lt(&min_y) { min_y = b.y(); }
         }
 
-        Rect::new(
-            min_x,
-            min_y,
-            (max_x - min_x).abs() as u32 + 1,
-            (max_y - min_y).abs() as u32 + 1,
-        )
+        let width = (max_x - min_x).abs() as u32;
+        let height = (max_y - min_y).abs() as u32;
+        Rect::new(min_x, min_y, width, height)
     }
 
     fn adjust_bound(&mut self) {
@@ -404,13 +417,18 @@ impl Grid {
     }
 
     fn _check_index_rage(&self, point: &Point) -> bool {
-        point.y() >= 0 && point.y() < ROWS as i32 && point.x() >= 0 && point.x() < COLUMNS as i32
+        point.y() >= 0
+            && point.y() < ROWS as i32
+            && point.x() >= 0
+            && point.x() < COLUMNS as i32
     }
 
     fn fill(&mut self, block: &Block) {
-        let points: Vec<&Point> = block.points_ref().iter().filter(|point| {
-            self._check_index_rage(point)
-        }).collect();
+        let points: Vec<&Point> = block.points_ref().iter()
+            .filter(|point| {
+                self._check_index_rage(point)
+            })
+            .collect();
 
         for point in points {
             self.data[point.y() as usize][point.x() as usize] = block.block_type.index();
@@ -418,8 +436,10 @@ impl Grid {
     }
 
     fn is_reach_to_end(&self, points: &Points) -> bool {
-        let c: Vec<&Point> = points.iter().filter(|point| point.y() == ROWS as i32 - 1).collect();
-        c.len() > 0
+        points.iter()
+            .filter(|point| point.y() == ROWS as i32 - 1)
+            .collect::<Vec<&Point>>()
+            .len() > 0
     }
 
     fn is_empty_below(&self, points: &Points) -> bool {
@@ -429,16 +449,16 @@ impl Grid {
     }
 
     fn is_empty(&self, points: &Points) -> bool {
-        let c: Vec<&Point> = points.iter()
+        points.iter()
             .filter(|point| self._check_index_rage(point))
             .filter(|point| {
                 self.data[point.y() as usize][point.x() as usize] > 0
-            }).collect();
-
-        c.len() == 0
+            })
+            .collect::<Vec<&Point>>()
+            .len() == 0
     }
 
-    fn for_each_cell<F>(&self, mut func: F) where F: FnMut(i32, i32, u8) {
+    fn foreach<F>(&self, mut func: F) where F: FnMut(i32, i32, u8) {
         for r in 0..self.data.len() {
             let row = self.data[r];
             for c in 0..row.len() {

@@ -45,15 +45,14 @@ extern "C" fn main_loop_callback(arg: *mut c_void) {
 
 extern "C" fn em_worker_callback_func(data: *mut c_char, size: c_int, _user_args: *mut c_void) {
     let raw_msg: &[u8] = unsafe {
-        let slice = std::slice::from_raw_parts(data, size as usize - 1);
-        mem::transmute(slice)
+        mem::transmute(std::slice::from_raw_parts(data, size as usize - 1))
     };
 
     let msg = String::from_utf8(raw_msg.to_vec()).unwrap();
     let msg = msg.as_str();
     let msg: ts::Msg = serde_json::from_str(msg).unwrap();
-    let mut messages = MESSAGE.lock().unwrap();
-    messages.push(msg);
+
+    MESSAGE.lock().unwrap().push(msg);
 }
 
 //
@@ -98,36 +97,34 @@ fn call_worker(handle: c_int, func_name: *const c_char, data: *mut c_char, len: 
     }
 }
 
-fn init_workers(worker_count: u8, tetris_count_per_worker: u32) -> Vec<c_int> {
+fn init_workers(worker_count: u8, tetris_per_worker: u32) -> Vec<c_int> {
     let handles: Vec<c_int> = (0..worker_count)
         .map(|_| {
             let resource = CString::new("tetriscore.js").unwrap();
-            unsafe {
-                asm::emscripten_create_worker(resource.as_ptr())
-            }
+            unsafe { asm::emscripten_create_worker(resource.as_ptr()) }
         })
         .collect();
 
     for i in 0..handles.len() {
-        let tetris_event = ts::TetrisEvent::InitWorker(i as u8, tetris_count_per_worker);
-        send_event(tetris_event, handles[i]);
+        send_event(ts::TetrisEvent::InitWorker(i as u8, tetris_per_worker), handles[i]);
     }
 
     handles
 }
 
-fn init_tetris(worker_handles: &Vec<c_int>, tetris_count_per_worker: u32) {
+fn init_tetris(worker_handles: &Vec<c_int>, tetris_per_worker: u32) {
     for worker_index in 0..worker_handles.len() as u8 {
-        for tetris_index in 0..tetris_count_per_worker {
-            let tetris_event = ts::TetrisEvent::InitTetris(worker_index, tetris_index);
-            let handle = worker_handles[worker_index as usize];
-            send_event(tetris_event, handle);
+        for tetris_index in 0..tetris_per_worker {
+            send_event(
+                ts::TetrisEvent::InitTetris(worker_index, tetris_index),
+                worker_handles[worker_index as usize]
+            );
         }
     }
 }
 
-fn send_event(tetris_event: ts::TetrisEvent, handle: c_int) {
-    match tetris_event.to_json() {
+fn send_event(event: ts::TetrisEvent, handle: c_int) {
+    match event.to_json() {
         Ok(json) => {
             let send = CString::new(json).unwrap();
             let send = send.into_raw();
@@ -189,12 +186,13 @@ impl Painter {
 
     fn paint_main(&self, message: &ts::Msg, canvas: &mut Canvas<Window>) {
         if let Some((ref current_type, ref current_points, _)) = message.block {
+            let (r, g, b) = current_type.color();
             let points: Vec<Point> = current_points.iter()
                 .map(|point| {
                     Point::new(point.x(), point.y())
                 })
                 .collect();
-            let (r, g, b) = current_type.color();
+
             canvas.set_draw_color(Color::RGB(r, g, b));
             canvas.draw_points(points.as_slice()).unwrap();
         }
@@ -208,8 +206,10 @@ impl Painter {
                     Point::new(point.x() + 2 + MAIN_WIDTH as i32, point.y() + 1)
                 })
                 .collect();
+
             canvas.set_draw_color(Color::RGB(10, 10, 10));
             canvas.fill_rect(Rect::new(MAIN_WIDTH as i32, 0, WINDOW_WIDTH - MAIN_WIDTH, WINDOW_HEIGHT)).unwrap();
+
             canvas.set_draw_color(Color::RGB(r, g, b));
             canvas.draw_points(points.as_slice()).unwrap();
         }
@@ -219,32 +219,28 @@ impl Painter {
         canvas.with_texture_canvas(texture, |texture_canvas| {
             texture_canvas.set_draw_color(Color::RGB(0, 0, 0));
             texture_canvas.clear();
+
             self.paint_main(message, texture_canvas);
             self.paint_scoreboard(message, texture_canvas);
         }).unwrap();
 
-        let start = match message.event {
+        match message.event {
             ts::TetrisEvent::InitTetris(worker_index, tetris_index) |
-            ts::TetrisEvent::TickEvent(worker_index, tetris_index) |
-            ts::TetrisEvent::UserEvent(worker_index, tetris_index, _) => {
+            ts::TetrisEvent::Tick(worker_index, tetris_index) |
+            ts::TetrisEvent::User(worker_index, tetris_index, _) => {
                 let index = (worker_index as u32 * TETRIS_COUNT + tetris_index) as usize;
-                Some(&self.starts[index])
+                let start = &self.starts[index];
+                canvas.copy(texture,
+                            Some(Rect::new(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT)),
+                            Some(Rect::new(
+                                start.x(),
+                                start.y(),
+                                WINDOW_WIDTH * self.scale as u32,
+                                WINDOW_HEIGHT * self.scale as u32
+                            ))).unwrap();
             }
-            _ => None
-        };
-
-        if start.is_none() {
-            return;
+            _ => ()
         }
-
-        let src = Some(Rect::new(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT));
-
-        let start = start.unwrap();
-        let dst_width = WINDOW_WIDTH * self.scale as u32;
-        let dst_height = WINDOW_HEIGHT * self.scale as u32;
-        let dst = Some(Rect::new(start.x(), start.y(), dst_width, dst_height));
-
-        canvas.copy(texture, src, dst).unwrap();
     }
 }
 
@@ -254,7 +250,7 @@ struct App<'a> {
     events: EventPump,
     worker_handles: Vec<c_int>,
     worker_count: u8,
-    tetris_count_per_worker: u32,
+    tetris_per_worker: u32,
     painter: Painter,
 }
 
@@ -264,13 +260,13 @@ impl<'a> App<'a> {
         events: EventPump,
         texture_creator: &'a TextureCreator<WindowContext>,
         worker_count: u8,
-        tetris_count_per_worker: u32
+        tetris_per_worker: u32
     ) -> App {
         let texture = texture_creator.create_texture_target(None, WINDOW_WIDTH, WINDOW_HEIGHT).unwrap();
-        let worker_handles = init_workers(worker_count, tetris_count_per_worker);
+        let worker_handles = init_workers(worker_count, tetris_per_worker);
         let painter = Painter::new(WORKER_COUNT as u32 * TETRIS_COUNT as u32);
 
-        init_tetris(&worker_handles, tetris_count_per_worker);
+        init_tetris(&worker_handles, tetris_per_worker);
 
         App {
             canvas: canvas,
@@ -278,7 +274,7 @@ impl<'a> App<'a> {
             events: events,
             worker_handles: worker_handles,
             worker_count: worker_count,
-            tetris_count_per_worker: tetris_count_per_worker,
+            tetris_per_worker: tetris_per_worker,
             painter: painter,
         }
     }
@@ -308,7 +304,7 @@ impl<'a> App<'a> {
     fn traverse_all_tetris<CB>(&mut self, callback: CB) where CB: Fn(u8, u32, c_int) {
         for worker_index in 0..self.worker_count {
             let handle = self.worker_handles[worker_index as usize];
-            for tetris_index in 0..self.tetris_count_per_worker {
+            for tetris_index in 0..self.tetris_per_worker {
                 callback(worker_index, tetris_index, handle);
             }
         }
@@ -316,7 +312,7 @@ impl<'a> App<'a> {
 
     fn check_gravity(&mut self) {
         self.traverse_all_tetris(|worker_index, tetris_index, handle| {
-            send_event(ts::TetrisEvent::TickEvent(worker_index, tetris_index), handle);
+            send_event(ts::TetrisEvent::Tick(worker_index, tetris_index), handle);
         });
     }
 
@@ -328,8 +324,7 @@ impl<'a> App<'a> {
         }
 
         self.traverse_all_tetris(|worker_index, tetris_index, handle| {
-            let tetris_event = ts::TetrisEvent::UserEvent(worker_index, tetris_index, events.clone());
-            send_event(tetris_event, handle);
+            send_event(ts::TetrisEvent::User(worker_index, tetris_index, events.clone()), handle);
         });
     }
 
