@@ -6,6 +6,7 @@ extern crate serde_json;
 extern crate sdl2;
 extern crate tetris_struct as ts;
 
+use std::collections::HashMap;
 use std::ptr;
 use std::os::raw::{c_char, c_int, c_void};
 use std::ffi::CString;
@@ -97,45 +98,63 @@ fn call_worker(handle: c_int, func_name: *const c_char, data: *mut c_char, len: 
     }
 }
 
-fn init_workers(worker_count: u8, tetris_per_worker: u32) -> Vec<c_int> {
-    let handles: Vec<c_int> = (0..worker_count)
-        .map(|_| {
-            let resource = CString::new("tetriscore.js").unwrap();
-            unsafe { asm::emscripten_create_worker(resource.as_ptr()) }
-        })
-        .collect();
-
-    for i in 0..handles.len() {
-        send_event(ts::TetrisEvent::InitWorker(i as u8, tetris_per_worker), handles[i]);
-    }
-
-    handles
+struct Sender {
+    events: HashMap<u8, Vec<ts::TetrisEvent>>,
+    worker_handles: Vec<c_int>,
 }
 
-fn init_tetris(worker_handles: &Vec<c_int>, tetris_per_worker: u32) {
-    for worker_index in 0..worker_handles.len() as u8 {
-        for tetris_index in 0..tetris_per_worker {
-            send_event(
-                ts::TetrisEvent::InitTetris(worker_index, tetris_index),
-                worker_handles[worker_index as usize]
-            );
+impl Sender {
+    fn new(worker_count: u8) -> Sender {
+        let worker_handles = (0..worker_count)
+            .map(|_| {
+                let resource = CString::new("tetriscore.js").unwrap();
+                unsafe { asm::emscripten_create_worker(resource.as_ptr()) }
+            })
+            .collect();
+
+        Sender {
+            events: HashMap::new(),
+            worker_handles: worker_handles
         }
     }
-}
 
-fn send_event(event: ts::TetrisEvent, handle: c_int) {
-    match event.to_json() {
-        Ok(json) => {
+    fn init(&mut self, tetris_per_worker: u32) {
+        for worker_index in 0..self.worker_handles.len() {
+            self.send(ts::TetrisEvent::InitWorker(worker_index as u8, tetris_per_worker));
+        }
+
+        self.flush();
+
+        for worker_index in 0..self.worker_handles.len() as u8 {
+            for tetris_index in 0..tetris_per_worker {
+                self.send(ts::TetrisEvent::InitTetris(worker_index, tetris_index));
+            }
+        }
+
+        self.flush();
+    }
+
+    fn send(&mut self, event: ts::TetrisEvent) {
+        if !self.events.contains_key(&event.worker_id()) {
+            self.events.insert(event.worker_id(), Vec::new());
+        }
+
+        if let Some(e) = self.events.get_mut(&event.worker_id()) {
+            e.push(event);
+        }
+    }
+
+    fn flush(&mut self) {
+        for (worker_id, events) in self.events.iter() {
+            let json = serde_json::to_string(&events.iter().map(|e| e.to_json().expect("Error: JSON convert")).collect::<Vec<String>>()).unwrap();
             let send = CString::new(json).unwrap();
             let send = send.into_raw();
             let len = unsafe { libc::strlen(send) as i32 };
             let method = CString::new("on").unwrap();
-            call_worker(handle, method.as_ptr(), send, len);
+            call_worker(self.worker_handles[*worker_id as usize], method.as_ptr(), send, len);
         }
-        Err(e) => {
-            panic!("{:?}", e);
-        }
-    };
+        self.events.clear();
+    }
 }
 
 struct Painter {
@@ -248,10 +267,10 @@ struct App<'a> {
     canvas: Canvas<Window>,
     texture: Texture<'a>,
     events: EventPump,
-    worker_handles: Vec<c_int>,
     worker_count: u8,
     tetris_per_worker: u32,
     painter: Painter,
+    sender: Sender,
 }
 
 impl<'a> App<'a> {
@@ -260,22 +279,20 @@ impl<'a> App<'a> {
         events: EventPump,
         texture_creator: &'a TextureCreator<WindowContext>,
         worker_count: u8,
-        tetris_per_worker: u32
+        tetris_per_worker: u32,
     ) -> App {
-        let texture = texture_creator.create_texture_target(None, WINDOW_WIDTH, WINDOW_HEIGHT).unwrap();
-        let worker_handles = init_workers(worker_count, tetris_per_worker);
-        let painter = Painter::new(WORKER_COUNT as u32 * TETRIS_COUNT as u32);
-
-        init_tetris(&worker_handles, tetris_per_worker);
+        let mut sender = Sender::new(worker_count);
+        sender.init(tetris_per_worker);
+        let painter = Painter::new(worker_count as u32 * tetris_per_worker as u32);
 
         App {
             canvas: canvas,
-            texture: texture,
+            texture: texture_creator.create_texture_target(None, WINDOW_WIDTH, WINDOW_HEIGHT).unwrap(),
             events: events,
-            worker_handles: worker_handles,
             worker_count: worker_count,
             tetris_per_worker: tetris_per_worker,
             painter: painter,
+            sender: sender,
         }
     }
 
@@ -301,19 +318,12 @@ impl<'a> App<'a> {
         events
     }
 
-    fn traverse_all_tetris<CB>(&mut self, callback: CB) where CB: Fn(u8, u32, c_int) {
+    fn check_gravity(&mut self) {
         for worker_index in 0..self.worker_count {
-            let handle = self.worker_handles[worker_index as usize];
             for tetris_index in 0..self.tetris_per_worker {
-                callback(worker_index, tetris_index, handle);
+                self.sender.send(ts::TetrisEvent::Tick(worker_index, tetris_index));
             }
         }
-    }
-
-    fn check_gravity(&mut self) {
-        self.traverse_all_tetris(|worker_index, tetris_index, handle| {
-            send_event(ts::TetrisEvent::Tick(worker_index, tetris_index), handle);
-        });
     }
 
     fn handle_events(&mut self) {
@@ -323,9 +333,11 @@ impl<'a> App<'a> {
             return;
         }
 
-        self.traverse_all_tetris(|worker_index, tetris_index, handle| {
-            send_event(ts::TetrisEvent::User(worker_index, tetris_index, events.clone()), handle);
-        });
+        for worker_index in 0..self.worker_count {
+            for tetris_index in 0..self.tetris_per_worker {
+                self.sender.send(ts::TetrisEvent::User(worker_index, tetris_index, events.clone()));
+            }
+        }
     }
 
     fn handle_messages(&mut self) {
@@ -341,5 +353,6 @@ impl<'a> App<'a> {
         self.check_gravity();
         self.handle_events();
         self.handle_messages();
+        self.sender.flush();
     }
 }

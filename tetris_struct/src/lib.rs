@@ -145,6 +145,15 @@ impl TetrisEvent {
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(&self)
     }
+
+    pub fn worker_id(&self) -> u8 {
+        match *self {
+            TetrisEvent::InitWorker(worker_index, _) |
+            TetrisEvent::InitTetris(worker_index, _) |
+            TetrisEvent::Tick(worker_index, _) |
+            TetrisEvent::User(worker_index, _, _) => worker_index
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
