@@ -134,37 +134,37 @@ pub enum BlockEvent {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub enum TetrisEvent {
+pub enum AppEvent {
     InitWorker(u8/*worker index*/, u32/*tetris count*/),
     InitTetris(u8/*worker index*/, u32/*tetris id*/),
     Tick(u8/*worker index*/, u32/*tetris id*/),
     User(u8/*worker index*/, u32/*tetris id*/, Vec<BlockEvent>),
 }
 
-impl TetrisEvent {
+impl AppEvent {
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(&self)
     }
 
     pub fn worker_id(&self) -> u8 {
         match *self {
-            TetrisEvent::InitWorker(worker_index, _) |
-            TetrisEvent::InitTetris(worker_index, _) |
-            TetrisEvent::Tick(worker_index, _) |
-            TetrisEvent::User(worker_index, _, _) => worker_index
+            AppEvent::InitWorker(worker_index, _) |
+            AppEvent::InitTetris(worker_index, _) |
+            AppEvent::Tick(worker_index, _) |
+            AppEvent::User(worker_index, _, _) => worker_index
         }
     }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Msg {
-    pub event: TetrisEvent,
+    pub event: AppEvent,
     pub block: Option<Block>,
     pub grid: Option<Grid>,
 }
 
 impl Msg {
-    pub fn new(event: TetrisEvent, block: Option<Block>, grid: Option<Grid>) -> Msg {
+    pub fn new(event: AppEvent, block: Option<Block>, grid: Option<Grid>) -> Msg {
         Msg { event: event, block: block, grid: grid }
     }
 

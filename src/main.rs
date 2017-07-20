@@ -6,7 +6,6 @@ extern crate serde_json;
 extern crate sdl2;
 extern crate tetris_struct as ts;
 
-use std::collections::HashMap;
 use std::ptr;
 use std::os::raw::{c_char, c_int, c_void};
 use std::ffi::CString;
@@ -31,6 +30,7 @@ const TARGET_RENDER_HEIGHT: u32 = 440;
 
 const WORKER_COUNT: u8 = 1;
 const TETRIS_COUNT: u32 = 4; // (4 as u32).pow(4) / WORKER_COUNT;
+//const TETRIS_COUNT: u32 = 256; // (4 as u32).pow(4) / WORKER_COUNT;
 
 lazy_static! {
     static ref MESSAGE: Mutex<Vec<ts::Msg>> = Mutex::new(vec![]);
@@ -50,8 +50,7 @@ extern "C" fn em_worker_callback_func(data: *mut c_char, size: c_int, _user_args
     };
 
     let msg = String::from_utf8(raw_msg.to_vec()).unwrap();
-    let msg = msg.as_str();
-    let msg: ts::Msg = serde_json::from_str(msg).unwrap();
+    let msg = serde_json::from_str::<ts::Msg>(msg.as_str()).unwrap();
 
     MESSAGE.lock().unwrap().push(msg);
 }
@@ -99,7 +98,6 @@ fn call_worker(handle: c_int, func_name: *const c_char, data: *mut c_char, len: 
 }
 
 struct Sender {
-    events: HashMap<u8, Vec<ts::TetrisEvent>>,
     worker_handles: Vec<c_int>,
 }
 
@@ -113,47 +111,29 @@ impl Sender {
             .collect();
 
         Sender {
-            events: HashMap::new(),
-            worker_handles: worker_handles
+            worker_handles: worker_handles,
         }
     }
 
     fn init(&mut self, tetris_per_worker: u32) {
         for worker_index in 0..self.worker_handles.len() {
-            self.send(ts::TetrisEvent::InitWorker(worker_index as u8, tetris_per_worker));
+            self.send(ts::AppEvent::InitWorker(worker_index as u8, tetris_per_worker));
         }
-
-        self.flush();
 
         for worker_index in 0..self.worker_handles.len() as u8 {
             for tetris_index in 0..tetris_per_worker {
-                self.send(ts::TetrisEvent::InitTetris(worker_index, tetris_index));
+                self.send(ts::AppEvent::InitTetris(worker_index, tetris_index));
             }
         }
-
-        self.flush();
     }
 
-    fn send(&mut self, event: ts::TetrisEvent) {
-        if !self.events.contains_key(&event.worker_id()) {
-            self.events.insert(event.worker_id(), Vec::new());
-        }
-
-        if let Some(e) = self.events.get_mut(&event.worker_id()) {
-            e.push(event);
-        }
-    }
-
-    fn flush(&mut self) {
-        for (worker_id, events) in self.events.iter() {
-            let json = serde_json::to_string(&events.iter().map(|e| e.to_json().expect("Error: JSON convert")).collect::<Vec<String>>()).unwrap();
-            let send = CString::new(json).unwrap();
-            let send = send.into_raw();
-            let len = unsafe { libc::strlen(send) as i32 };
-            let method = CString::new("on").unwrap();
-            call_worker(self.worker_handles[*worker_id as usize], method.as_ptr(), send, len);
-        }
-        self.events.clear();
+    fn send(&mut self, event: ts::AppEvent) {
+        let json = serde_json::to_string(&event).expect("[main] Serialize error");
+        let send = CString::new(json).unwrap();
+        let send = send.into_raw();
+        let len = unsafe { libc::strlen(send) as i32 };
+        let method = CString::new("on").unwrap();
+        call_worker(self.worker_handles[event.worker_id() as usize], method.as_ptr(), send, len);
     }
 }
 
@@ -208,7 +188,7 @@ impl Painter {
             let (r, g, b) = current_type.color();
             let points: Vec<Point> = current_points.iter()
                 .map(|point| {
-                    Point::new(point.x(), point.y())
+                    Point::new(point.x() + BORDER as i32, point.y())
                 })
                 .collect();
 
@@ -222,7 +202,7 @@ impl Painter {
             let (r, g, b) = next_type.color();
             let points: Vec<Point> = next_type.points().iter()
                 .map(|point| {
-                    Point::new(point.x() + 2 + MAIN_WIDTH as i32, point.y() + 1)
+                    Point::new(point.x() + 3 + MAIN_WIDTH as i32, point.y() + 2)
                 })
                 .collect();
 
@@ -244,9 +224,9 @@ impl Painter {
         }).unwrap();
 
         match message.event {
-            ts::TetrisEvent::InitTetris(worker_index, tetris_index) |
-            ts::TetrisEvent::Tick(worker_index, tetris_index) |
-            ts::TetrisEvent::User(worker_index, tetris_index, _) => {
+            ts::AppEvent::InitTetris(worker_index, tetris_index) |
+            ts::AppEvent::Tick(worker_index, tetris_index) |
+            ts::AppEvent::User(worker_index, tetris_index, _) => {
                 let index = (worker_index as u32 * TETRIS_COUNT + tetris_index) as usize;
                 let start = &self.starts[index];
                 canvas.copy(texture,
@@ -321,7 +301,7 @@ impl<'a> App<'a> {
     fn check_gravity(&mut self) {
         for worker_index in 0..self.worker_count {
             for tetris_index in 0..self.tetris_per_worker {
-                self.sender.send(ts::TetrisEvent::Tick(worker_index, tetris_index));
+                self.sender.send(ts::AppEvent::Tick(worker_index, tetris_index));
             }
         }
     }
@@ -335,7 +315,7 @@ impl<'a> App<'a> {
 
         for worker_index in 0..self.worker_count {
             for tetris_index in 0..self.tetris_per_worker {
-                self.sender.send(ts::TetrisEvent::User(worker_index, tetris_index, events.clone()));
+                self.sender.send(ts::AppEvent::User(worker_index, tetris_index, events.clone()));
             }
         }
     }
@@ -353,6 +333,5 @@ impl<'a> App<'a> {
         self.check_gravity();
         self.handle_events();
         self.handle_messages();
-        self.sender.flush();
     }
 }
