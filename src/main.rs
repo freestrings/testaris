@@ -30,7 +30,15 @@ const TARGET_RENDER_HEIGHT: u32 = 440;
 
 const WORKER_COUNT: u8 = 1;
 const TETRIS_COUNT: u32 = 4; // (4 as u32).pow(4) / WORKER_COUNT;
-//const TETRIS_COUNT: u32 = 256; // (4 as u32).pow(4) / WORKER_COUNT;
+
+//const WORKER_COUNT: u8 = 2;
+//const TETRIS_COUNT: u32 = 32; // (4 as u32).pow(4) / WORKER_COUNT;
+
+//const WORKER_COUNT: u8 = 1;
+//const TETRIS_COUNT: u32 = 64; // (4 as u32).pow(4) / WORKER_COUNT;
+
+//const WORKER_COUNT: u8 = 2;
+//const TETRIS_COUNT: u32 = 128; // (4 as u32).pow(4) / WORKER_COUNT;
 
 lazy_static! {
     static ref MESSAGE: Mutex<Vec<ts::Msg>> = Mutex::new(vec![]);
@@ -183,13 +191,15 @@ impl Painter {
         }
     }
 
+    fn as_point(&self, x: i32, y: i32) -> Point {
+        Point::new(x + BORDER as i32, y)
+    }
+
     fn paint_main(&self, message: &ts::Msg, canvas: &mut Canvas<Window>) {
         if let Some((ref current_type, ref current_points, _)) = message.block {
             let (r, g, b) = current_type.color();
             let points: Vec<Point> = current_points.iter()
-                .map(|point| {
-                    Point::new(point.x() + BORDER as i32, point.y())
-                })
+                .map(|point| self.as_point(point.x(), point.y()))
                 .collect();
 
             canvas.set_draw_color(Color::RGB(r, g, b));
@@ -214,6 +224,24 @@ impl Painter {
         }
     }
 
+    fn paint_grid(&self, message: &ts::Msg, canvas: &mut Canvas<Window>) {
+        if let Some(grid) = message.grid {
+            for r_index in 0..grid.len() {
+                let row = grid[r_index];
+                for c_index in 0..row.len() {
+                    let piece = row[c_index];
+                    if piece == 0 {
+                        continue;
+                    }
+
+                    let (r, g, b) = ts::BlockType::new(piece).color();
+                    canvas.set_draw_color(Color::RGB(r, g, b));
+                    canvas.draw_point(self.as_point(c_index as i32, r_index as i32)).unwrap();
+                }
+            }
+        }
+    }
+
     fn paint(&self, message: &ts::Msg, canvas: &mut Canvas<Window>, texture: &mut Texture) {
         canvas.with_texture_canvas(texture, |texture_canvas| {
             texture_canvas.set_draw_color(Color::RGB(0, 0, 0));
@@ -221,6 +249,7 @@ impl Painter {
 
             self.paint_main(message, texture_canvas);
             self.paint_scoreboard(message, texture_canvas);
+            self.paint_grid(message, texture_canvas);
         }).unwrap();
 
         match message.event {
@@ -322,11 +351,10 @@ impl<'a> App<'a> {
 
     fn handle_messages(&mut self) {
         let mut messages = MESSAGE.lock().unwrap();
-        while !messages.is_empty() {
-            if let Some(ref message) = messages.pop() {
-                self.painter.paint(message, &mut self.canvas, &mut self.texture);
-            }
+        for message in messages.iter() {
+            self.painter.paint(message, &mut self.canvas, &mut self.texture);
         }
+        messages.clear();
     }
 
     fn run(&mut self) {

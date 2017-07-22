@@ -57,7 +57,7 @@ impl Tetris {
         Tetris {
             block: Block::new(BlockType::random()),
             grid: Grid::new(),
-            ticker: Ticker::new(50),
+            ticker: Ticker::new(10),
         }
     }
 }
@@ -184,7 +184,7 @@ fn tick_event(worker_index: u8, tetris_index: u32) {
         Msg::new(
             AppEvent::Tick(worker_index, tetris_index),
             Some(block.to_msg()),
-            None
+            Some(grid.get_data()),
         )
     );
 }
@@ -224,7 +224,7 @@ fn user_event(worker_index: u8, tetris_index: u32, block_events: Vec<BlockEvent>
         Msg::new(
             AppEvent::User(worker_index, tetris_index, Vec::new()),
             Some(block.to_msg()),
-            None
+            Some(grid.get_data()),
         )
     );
 }
@@ -430,6 +430,12 @@ impl Grid {
         Grid { data: [[0; COLUMNS as usize]; ROWS as usize] }
     }
 
+    fn get_data(&mut self) -> [[u8; COLUMNS as usize]; ROWS as usize] {
+        let mut copy = [[0; COLUMNS as usize]; ROWS as usize];
+        copy.copy_from_slice(&self.data);
+        copy
+    }
+
     fn _check_index_range(&self, point: &Point) -> bool {
         point.y() >= 0
             && point.y() < ROWS as i32
@@ -438,14 +444,10 @@ impl Grid {
     }
 
     fn fill(&mut self, block: &Block) {
-        let points: Vec<&Point> = block.points_ref().iter()
-            .filter(|point| {
-                self._check_index_range(point)
-            })
-            .collect();
-
-        for point in points {
-            self.data[point.y() as usize][point.x() as usize] = block.block_type.index();
+        for point in block.points_ref() {
+            if self._check_index_range(point) {
+                self.data[point.y() as usize][point.x() as usize] = block.block_type.index();
+            }
         }
     }
 
@@ -483,6 +485,10 @@ impl Grid {
         }
     }
 
+    fn is_full(&self, r_index: usize) -> bool {
+        self.data[r_index].iter().filter(|c| c == &&0).collect::<Vec<&u8>>().len() == 0
+    }
+
     fn find_full_row(&self) -> Vec<i32> {
         let mut rows: Vec<i32> = Vec::new();
         for r in (0..self.data.len()).rev() {
@@ -500,8 +506,8 @@ impl Grid {
         rows
     }
 
-    fn remove_row(&mut self, row_index: usize) {
-        for r in (0..row_index).rev() {
+    fn remove_row(&mut self, r_index: usize) {
+        for r in (0..r_index).rev() {
             for c in 0..self.data[r].len() {
                 self.data[r + 1][c] = self.data[r][c];
             }

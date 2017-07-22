@@ -154,6 +154,15 @@ impl AppEvent {
             AppEvent::User(worker_index, _, _) => worker_index
         }
     }
+
+    pub fn tetris_id(&self) -> u32 {
+        match *self {
+            AppEvent::InitWorker(_, tetris_id) |
+            AppEvent::InitTetris(_, tetris_id) |
+            AppEvent::Tick(_, tetris_id) |
+            AppEvent::User(_, tetris_id, _) => tetris_id
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
