@@ -4,7 +4,7 @@ extern crate lazy_static;
 extern crate libc;
 extern crate serde_json;
 extern crate sdl2;
-extern crate tetris_struct as ts;
+extern crate tetris_core as tc;
 
 use std::ptr;
 use std::os::raw::{c_char, c_int, c_void};
@@ -22,9 +22,9 @@ use sdl2::video::{Window, WindowContext};
 
 const BORDER: u32 = 1;
 const RIGHT_PANEL: u32 = 9;
-const MAIN_WIDTH: u32 = BORDER + ts::COLUMNS + BORDER;
+const MAIN_WIDTH: u32 = BORDER + tc::COLUMNS as u32 + BORDER;
 const WINDOW_WIDTH: u32 = MAIN_WIDTH + RIGHT_PANEL + BORDER;
-const WINDOW_HEIGHT: u32 = BORDER + ts::ROWS + BORDER;
+const WINDOW_HEIGHT: u32 = BORDER + tc::ROWS as u32 + BORDER;
 const TARGET_RENDER_WIDTH: u32 = 440;
 const TARGET_RENDER_HEIGHT: u32 = 440;
 
@@ -41,8 +41,8 @@ const TETRIS_COUNT: u32 = 4; // (4 as u32).pow(4) / WORKER_COUNT;
 //const TETRIS_COUNT: u32 = 128; // (4 as u32).pow(4) / WORKER_COUNT;
 
 lazy_static! {
-    static ref MESSAGE: Mutex<Vec<ts::Msg>> = Mutex::new(vec![]);
-    static ref EVENT_Q: Mutex<Vec<ts::BlockEvent>> = Mutex::new(vec![]);
+    static ref MESSAGE: Mutex<Vec<tc::Msg>> = Mutex::new(vec![]);
+    static ref EVENT_Q: Mutex<Vec<tc::BlockEvent>> = Mutex::new(vec![]);
 }
 
 extern "C" fn main_loop_callback(arg: *mut c_void) {
@@ -58,7 +58,7 @@ extern "C" fn em_worker_callback_func(data: *mut c_char, size: c_int, _user_args
     };
 
     let msg = String::from_utf8(raw_msg.to_vec()).unwrap();
-    let msg = serde_json::from_str::<ts::Msg>(msg.as_str()).unwrap();
+    let msg = serde_json::from_str::<tc::Msg>(msg.as_str()).unwrap();
 
     MESSAGE.lock().unwrap().push(msg);
 }
@@ -69,7 +69,7 @@ extern "C" fn em_worker_callback_func(data: *mut c_char, size: c_int, _user_args
 pub fn move_rotate() -> u8 {
     match EVENT_Q.lock() {
         Ok(mut v) => {
-            v.push(ts::BlockEvent::Rotate);
+            v.push(tc::BlockEvent::Rotate);
             0
         }
         Err(_) => 1,
@@ -125,17 +125,17 @@ impl Sender {
 
     fn init(&mut self, tetris_per_worker: u32) {
         for worker_index in 0..self.worker_handles.len() {
-            self.send(ts::AppEvent::InitWorker(worker_index as u8, tetris_per_worker));
+            self.send(tc::AppEvent::InitWorker(worker_index as u8, tetris_per_worker));
         }
 
         for worker_index in 0..self.worker_handles.len() as u8 {
             for tetris_index in 0..tetris_per_worker {
-                self.send(ts::AppEvent::InitTetris(worker_index, tetris_index));
+                self.send(tc::AppEvent::InitTetris(worker_index, tetris_index));
             }
         }
     }
 
-    fn send(&mut self, event: ts::AppEvent) {
+    fn send(&mut self, event: tc::AppEvent) {
         let json = serde_json::to_string(&event).expect("[main] Serialize error");
         let send = CString::new(json).unwrap();
         let send = send.into_raw();
@@ -146,7 +146,7 @@ impl Sender {
 }
 
 struct Painter {
-    starts: Vec<ts::Point>,
+    starts: Vec<tc::Point>,
     width: u32,
     height: u32,
     scale: i32,
@@ -171,11 +171,11 @@ impl Painter {
 
         let mut w = 0;
         let mut h = 0;
-        let mut starts: Vec<ts::Point> = Vec::new();
+        let mut starts: Vec<tc::Point> = Vec::new();
 
         for _ in 0..room_count {
             for _ in 0..room_count {
-                starts.push(ts::Point::new(w as i32, h as i32));
+                starts.push(tc::Point::new(w as i32, h as i32));
                 w += width;
             }
             w = 0;
@@ -195,10 +195,10 @@ impl Painter {
         Point::new(x + BORDER as i32, y)
     }
 
-    fn paint_main(&self, message: &ts::Msg, canvas: &mut Canvas<Window>) {
-        if let Some((ref current_type, ref current_points, _)) = message.block {
-            let (r, g, b) = current_type.color();
-            let points: Vec<Point> = current_points.iter()
+    fn paint_main(&self, message: &tc::Msg, canvas: &mut Canvas<Window>) {
+        if let Some(ref block) = message.block {
+            let &(r, g, b) = block.color_ref();
+            let points: Vec<Point> = block.points_ref().iter()
                 .map(|point| self.as_point(point.x(), point.y()))
                 .collect();
 
@@ -207,34 +207,36 @@ impl Painter {
         }
     }
 
-    fn paint_scoreboard(&self, message: &ts::Msg, canvas: &mut Canvas<Window>) {
-        if let Some((_, _, Some(ref next_type))) = message.block {
-            let (r, g, b) = next_type.color();
-            let points: Vec<Point> = next_type.points().iter()
-                .map(|point| {
-                    Point::new(point.x() + 3 + MAIN_WIDTH as i32, point.y() + 2)
-                })
-                .collect();
+    fn paint_scoreboard(&self, message: &tc::Msg, canvas: &mut Canvas<Window>) {
+        if let Some(ref block) = message.block {
+            if let &Some(ref next) = block.next_ref() {
+                let &(r, g, b) = next.color_ref();
+                let points: Vec<Point> = next.points_ref().iter()
+                    .map(|point| {
+                        Point::new(point.x() + 3 + MAIN_WIDTH as i32, point.y() + 2)
+                    })
+                    .collect();
 
-            canvas.set_draw_color(Color::RGB(10, 10, 10));
-            canvas.fill_rect(Rect::new(MAIN_WIDTH as i32, 0, WINDOW_WIDTH - MAIN_WIDTH, WINDOW_HEIGHT)).unwrap();
+                canvas.set_draw_color(Color::RGB(10, 10, 10));
+                canvas.fill_rect(Rect::new(MAIN_WIDTH as i32, 0, WINDOW_WIDTH - MAIN_WIDTH, WINDOW_HEIGHT)).unwrap();
 
-            canvas.set_draw_color(Color::RGB(r, g, b));
-            canvas.draw_points(points.as_slice()).unwrap();
+                canvas.set_draw_color(Color::RGB(r, g, b));
+                canvas.draw_points(points.as_slice()).unwrap();
+            }
         }
     }
 
-    fn paint_grid(&self, message: &ts::Msg, canvas: &mut Canvas<Window>) {
-        if let Some(grid) = message.grid {
-            for r_index in 0..grid.len() {
-                let row = grid[r_index];
-                for c_index in 0..row.len() {
-                    let piece = row[c_index];
+    fn paint_grid(&self, message: &tc::Msg, canvas: &mut Canvas<Window>) {
+        if let Some(ref grid) = message.grid {
+            let data = grid.get_data();
+            for r_index in 0..data.len() {
+                for c_index in 0..data[r_index].len() {
+                    let piece = data[r_index][c_index];
                     if piece == 0 {
                         continue;
                     }
 
-                    let (r, g, b) = ts::BlockType::new(piece).color();
+                    let (r, g, b) = tc::BlockType::new(piece).color();
                     canvas.set_draw_color(Color::RGB(r, g, b));
                     canvas.draw_point(self.as_point(c_index as i32, r_index as i32)).unwrap();
                 }
@@ -242,7 +244,7 @@ impl Painter {
         }
     }
 
-    fn paint(&self, message: &ts::Msg, canvas: &mut Canvas<Window>, texture: &mut Texture) {
+    fn paint(&self, message: &tc::Msg, canvas: &mut Canvas<Window>, texture: &mut Texture) {
         canvas.with_texture_canvas(texture, |texture_canvas| {
             texture_canvas.set_draw_color(Color::RGB(0, 0, 0));
             texture_canvas.clear();
@@ -253,9 +255,9 @@ impl Painter {
         }).unwrap();
 
         match message.event {
-            ts::AppEvent::InitTetris(worker_index, tetris_index) |
-            ts::AppEvent::Tick(worker_index, tetris_index) |
-            ts::AppEvent::User(worker_index, tetris_index, _) => {
+            tc::AppEvent::InitTetris(worker_index, tetris_index) |
+            tc::AppEvent::Tick(worker_index, tetris_index) |
+            tc::AppEvent::User(worker_index, tetris_index, _) => {
                 let index = (worker_index as u32 * TETRIS_COUNT + tetris_index) as usize;
                 let start = &self.starts[index];
                 canvas.copy(texture,
@@ -305,17 +307,17 @@ impl<'a> App<'a> {
         }
     }
 
-    fn events(&mut self) -> Vec<ts::BlockEvent> {
-        let mut events: Vec<ts::BlockEvent> = self.events.poll_iter()
+    fn events(&mut self) -> Vec<tc::BlockEvent> {
+        let mut events: Vec<tc::BlockEvent> = self.events.poll_iter()
             .map(|event| match event {
-                Event::KeyDown { keycode: Some(Keycode::Up), .. } => ts::BlockEvent::Rotate,
-                Event::KeyDown { keycode: Some(Keycode::Left), .. } => ts::BlockEvent::Left,
-                Event::KeyDown { keycode: Some(Keycode::Right), .. } => ts::BlockEvent::Right,
-                Event::KeyDown { keycode: Some(Keycode::Down), .. } => ts::BlockEvent::Down,
-                Event::KeyDown { keycode: Some(Keycode::Space), .. } => ts::BlockEvent::Drop,
-                _ => ts::BlockEvent::None,
+                Event::KeyDown { keycode: Some(Keycode::Up), .. } => tc::BlockEvent::Rotate,
+                Event::KeyDown { keycode: Some(Keycode::Left), .. } => tc::BlockEvent::Left,
+                Event::KeyDown { keycode: Some(Keycode::Right), .. } => tc::BlockEvent::Right,
+                Event::KeyDown { keycode: Some(Keycode::Down), .. } => tc::BlockEvent::Down,
+                Event::KeyDown { keycode: Some(Keycode::Space), .. } => tc::BlockEvent::Drop,
+                _ => tc::BlockEvent::None,
             })
-            .filter(|e| *e != ts::BlockEvent::None)
+            .filter(|e| *e != tc::BlockEvent::None)
             .collect();
 
         if let Ok(mut v) = EVENT_Q.lock() {
@@ -330,7 +332,7 @@ impl<'a> App<'a> {
     fn check_gravity(&mut self) {
         for worker_index in 0..self.worker_count {
             for tetris_index in 0..self.tetris_per_worker {
-                self.sender.send(ts::AppEvent::Tick(worker_index, tetris_index));
+                self.sender.send(tc::AppEvent::Tick(worker_index, tetris_index));
             }
         }
     }
@@ -344,7 +346,7 @@ impl<'a> App<'a> {
 
         for worker_index in 0..self.worker_count {
             for tetris_index in 0..self.tetris_per_worker {
-                self.sender.send(ts::AppEvent::User(worker_index, tetris_index, events.clone()));
+                self.sender.send(tc::AppEvent::User(worker_index, tetris_index, Some(events.clone())));
             }
         }
     }
