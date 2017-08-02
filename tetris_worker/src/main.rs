@@ -17,11 +17,13 @@ use tetris_core::*;
 
 fn main() {}
 
+#[cfg(target_arch = "wasm32")]
 lazy_static! {
     static ref TETRIS: Mutex<Vec<Tetris>> = Mutex::new(vec![]);
     static ref IDX: Mutex<Option<u8>> = Mutex::new(None);
 }
 
+#[cfg(target_arch = "wasm32")]
 fn send_back(msg: Msg) {
     let json = serde_json::to_string(&msg).expect("[core] Serialze error\0");
     let send_back = CString::new(json).unwrap();
@@ -29,11 +31,12 @@ fn send_back(msg: Msg) {
     let len = unsafe { libc::strlen(send_back) as i32 };
 
     #[cfg(target_arch = "wasm32")]
-        unsafe {
-            asm::emscripten_worker_respond(send_back, len + 1);
-        }
+    unsafe {
+        asm::emscripten_worker_respond(send_back, len + 1);
+    }
 }
 
+#[cfg(target_arch = "wasm32")]
 mod log {
     #[cfg(target_arch = "wasm32")]
     use super::asm;
@@ -41,26 +44,28 @@ mod log {
     pub fn debug(mut msg: String) {
         msg.push('\0');
         #[cfg(target_arch = "wasm32")]
-            unsafe {
-                asm::emscripten_log(asm::EM_LOG_CONSOLE as i32, msg);
-            }
+        unsafe {
+            asm::emscripten_log(asm::EM_LOG_CONSOLE as i32, msg);
+        }
     }
 
     pub fn error(mut msg: String) {
         msg.push('\0');
         #[cfg(target_arch = "wasm32")]
-            unsafe {
-                asm::emscripten_log(asm::EM_LOG_ERROR as i32, msg);
-            }
+        unsafe {
+            asm::emscripten_log(asm::EM_LOG_ERROR as i32, msg);
+        }
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 fn into_raw<'a>(data: *mut c_char, size: c_int) -> &'a [u8] {
     unsafe {
         mem::transmute(slice::from_raw_parts(data, size as usize))
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 fn worker_guard(worker_id: u8) -> bool {
     match *IDX.lock().unwrap() {
         Some(ref idx) => worker_id.ne(idx),
@@ -68,6 +73,7 @@ fn worker_guard(worker_id: u8) -> bool {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 #[no_mangle]
 pub fn on(data: *mut c_char, size: c_int) {
     let app_events = String::from_utf8(into_raw(data, size).to_vec()).unwrap();
@@ -87,6 +93,7 @@ pub fn on(data: *mut c_char, size: c_int) {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
 fn init_worker(worker_index: u8, tetris_count: u32) {
     if let Some(idx) = *IDX.lock().unwrap() {
         log::error(format!("already initialized: {}", idx));
@@ -103,6 +110,7 @@ fn init_worker(worker_index: u8, tetris_count: u32) {
     send_back(Msg::new(event, None, None));
 }
 
+#[cfg(target_arch = "wasm32")]
 fn init_tetris(worker_index: u8, tetris_index: u32) {
     if worker_guard(worker_index) {
         return;
@@ -116,10 +124,11 @@ fn init_tetris(worker_index: u8, tetris_index: u32) {
             AppEvent::InitTetris(worker_index, tetris_index),
             Some(tetris.get_block()),
             None
-        )
-    );
+            )
+        );
 }
 
+#[cfg(target_arch = "wasm32")]
 fn tick_event(worker_index: u8, tetris_index: u32) {
     if worker_guard(worker_index) {
         return;
@@ -133,10 +142,11 @@ fn tick_event(worker_index: u8, tetris_index: u32) {
             AppEvent::Tick(worker_index, tetris_index),
             Some(tetris.get_block()),
             Some(tetris.get_grid()),
-        )
-    );
+            )
+        );
 }
 
+#[cfg(target_arch = "wasm32")]
 fn user_event(worker_index: u8, tetris_index: u32, block_events: Option<Vec<BlockEvent>>) {
     if worker_guard(worker_index) {
         return;
@@ -150,6 +160,7 @@ fn user_event(worker_index: u8, tetris_index: u32, block_events: Option<Vec<Bloc
             AppEvent::User(worker_index, tetris_index, None),
             Some(tetris.get_block()),
             Some(tetris.get_grid()),
-        )
-    );
+            )
+        );
 }
+
