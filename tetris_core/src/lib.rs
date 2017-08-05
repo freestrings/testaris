@@ -57,7 +57,10 @@ pub struct Ticker {
 
 impl Ticker {
     pub fn new(fact: u32) -> Ticker {
-        Ticker { fact: fact, elapsed: 0 }
+        Ticker {
+            fact: fact,
+            elapsed: 0,
+        }
     }
 
     pub fn tick(&mut self) -> bool {
@@ -235,10 +238,10 @@ pub enum BlockEvent {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum AppEvent {
-    InitWorker(u8/*worker index*/, u32/*tetris count*/),
-    InitTetris(u8/*worker index*/, u32/*tetris id*/),
-    Tick(u8/*worker index*/, u32/*tetris id*/),
-    User(u8/*worker index*/, u32/*tetris id*/, Option<Vec<BlockEvent>>),
+    InitWorker(u8 /*worker index*/, u32 /*tetris count*/),
+    InitTetris(u8 /*worker index*/, u32 /*tetris id*/),
+    Tick(u8 /*worker index*/, u32 /*tetris id*/),
+    User(u8 /*worker index*/, u32 /*tetris id*/, Option<Vec<BlockEvent>>),
 }
 
 impl AppEvent {
@@ -251,7 +254,7 @@ impl AppEvent {
             AppEvent::InitWorker(worker_index, _) |
             AppEvent::InitTetris(worker_index, _) |
             AppEvent::Tick(worker_index, _) |
-            AppEvent::User(worker_index, _, _) => worker_index
+            AppEvent::User(worker_index, _, _) => worker_index,
         }
     }
 
@@ -260,7 +263,7 @@ impl AppEvent {
             AppEvent::InitWorker(_, tetris_id) |
             AppEvent::InitTetris(_, tetris_id) |
             AppEvent::Tick(_, tetris_id) |
-            AppEvent::User(_, tetris_id, _) => tetris_id
+            AppEvent::User(_, tetris_id, _) => tetris_id,
         }
     }
 }
@@ -274,7 +277,11 @@ pub struct Msg {
 
 impl Msg {
     pub fn new(event: AppEvent, block: Option<Block>, grid: Option<Grid>) -> Msg {
-        Msg { event: event, block: block, grid: grid }
+        Msg {
+            event: event,
+            block: block,
+            grid: grid,
+        }
     }
 
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
@@ -312,7 +319,12 @@ pub struct Rect {
 
 impl Rect {
     pub fn new(x: i32, y: i32, width: usize, height: usize) -> Rect {
-        Rect { x: x, y: y, width: width, height: height }
+        Rect {
+            x: x,
+            y: y,
+            width: width,
+            height: height,
+        }
     }
 
     pub fn x(&self) -> i32 {
@@ -416,53 +428,74 @@ impl Block {
     pub fn rotate(&mut self) {
         let angle = std::f32::consts::PI * 0.5_f32;
         let center = Point::new(self.points_ref()[2].x(), self.points_ref()[2].y());
-        let mut points = self.points_ref().iter().map(|point| {
-            let x = point.x() - center.x();
-            let y = point.y() - center.y();
-            let y = y * -1;
+        let mut points = self.points_ref()
+            .iter()
+            .map(|point| {
+                let x = point.x() - center.x();
+                let y = point.y() - center.y();
+                let y = y * -1;
 
-            let rotated_x = angle.cos() * x as f32 - angle.sin() * y as f32;
-            let rotated_x = rotated_x.round() as i32 + center.x();
-            let rotated_y = angle.sin() * x as f32 + angle.cos() * y as f32;
-            let rotated_y = rotated_y.round() as i32 * -1 + center.y();
+                let rotated_x = angle.cos() * x as f32 - angle.sin() * y as f32;
+                let rotated_x = rotated_x.round() as i32 + center.x();
+                let rotated_y = angle.sin() * x as f32 + angle.cos() * y as f32;
+                let rotated_y = rotated_y.round() as i32 * -1 + center.y();
 
-            Point::new(rotated_x, rotated_y)
-        }).collect();
-
-        self.update(&mut points);
-    }
-
-    pub fn shift<F>(&mut self, mut f: F) where F: FnMut() -> (i32, i32) {
-        let mut points = self.points_ref().iter().map(|point| {
-            let raw_point = f();
-            Point::new(point.x() + raw_point.0, point.y() + raw_point.1)
-        }).collect();
+                Point::new(rotated_x, rotated_y)
+            })
+            .collect();
 
         self.update(&mut points);
     }
 
-    pub fn left<GARD>(&mut self, rollback_gard: GARD) where GARD: Fn(&Points) -> bool {
+    pub fn shift<F>(&mut self, mut f: F)
+    where
+        F: FnMut() -> (i32, i32),
+    {
+        let mut points = self.points_ref()
+            .iter()
+            .map(|point| {
+                let raw_point = f();
+                Point::new(point.x() + raw_point.0, point.y() + raw_point.1)
+            })
+            .collect();
+
+        self.update(&mut points);
+    }
+
+    pub fn left<GARD>(&mut self, rollback_gard: GARD)
+    where
+        GARD: Fn(&Points) -> bool,
+    {
         self.shift(|| (-1, 0));
         if rollback_gard(self.points_ref()) {
             self.shift(|| (1, 0));
         }
     }
 
-    pub fn right<GARD>(&mut self, rollback_gard: GARD) where GARD: Fn(&Points) -> bool {
+    pub fn right<GARD>(&mut self, rollback_gard: GARD)
+    where
+        GARD: Fn(&Points) -> bool,
+    {
         self.shift(|| (1, 0));
         if rollback_gard(self.points_ref()) {
             self.shift(|| (-1, 0));
         }
     }
 
-    pub fn down<GARD>(&mut self, rollback_gard: GARD) where GARD: Fn(&Points) -> bool {
+    pub fn down<GARD>(&mut self, rollback_gard: GARD)
+    where
+        GARD: Fn(&Points) -> bool,
+    {
         self.shift(|| (0, 1));
         if rollback_gard(self.points_ref()) {
             self.shift(|| (0, -1));
         }
     }
 
-    pub fn drop<GARD>(&mut self, rollback_gard: GARD) where GARD: Fn(&Points) -> bool {
+    pub fn drop<GARD>(&mut self, rollback_gard: GARD)
+    where
+        GARD: Fn(&Points) -> bool,
+    {
         let range = self.range();
         let start_y = range.y() + range.height() as i32;
         for _ in start_y..ROWS as i32 {
@@ -482,10 +515,18 @@ impl Block {
 
         let points = self.points_ref();
         for b in points {
-            if b.x().gt(&max_x) { max_x = b.x(); }
-            if b.x().lt(&min_x) { min_x = b.x(); }
-            if b.y().gt(&max_y) { max_y = b.y(); }
-            if b.y().lt(&min_y) { min_y = b.y(); }
+            if b.x().gt(&max_x) {
+                max_x = b.x();
+            }
+            if b.x().lt(&min_x) {
+                min_x = b.x();
+            }
+            if b.y().gt(&max_y) {
+                max_y = b.y();
+            }
+            if b.y().lt(&min_y) {
+                min_y = b.y();
+            }
         }
 
         let width = (max_x - min_x).abs() as usize + 1;
@@ -536,10 +577,7 @@ impl Grid {
     }
 
     fn _check_index_range(&self, point: &Point) -> bool {
-        point.y() >= 0
-            && point.y() < ROWS as i32
-            && point.x() >= 0
-            && point.x() < COLUMNS as i32
+        point.y() >= 0 && point.y() < ROWS as i32 && point.x() >= 0 && point.x() < COLUMNS as i32
     }
 
     pub fn fill(&mut self, block: &Block) {
@@ -556,9 +594,9 @@ impl Grid {
                 return false;
             }
 
-            if self._check_index_range(point)
-                && point.y() + 1 < ROWS as i32
-                && self.data[point.y() as usize + 1][point.x() as usize] > 0 {
+            if self._check_index_range(point) && point.y() + 1 < ROWS as i32 &&
+                self.data[point.y() as usize + 1][point.x() as usize] > 0
+            {
                 return false;
             }
         }
@@ -566,7 +604,8 @@ impl Grid {
     }
 
     pub fn is_empty(&self, points: &Points) -> bool {
-        points.iter()
+        points
+            .iter()
             .filter(|point| self._check_index_range(point))
             .filter(|point| {
                 self.data[point.y() as usize][point.x() as usize] > 0
@@ -613,12 +652,17 @@ mod tests {
         grid.remove_row(1);
 
         assert_eq!(grid.get_data().len(), 20);
-        assert_eq!(grid.get_data().iter().fold(0, |acc, r| {
-            if r.iter().filter(|c| c > &&0_u8).collect::<Vec<&u8>>().len() == 0 {
+        assert_eq!(
+            grid.get_data().iter().fold(0, |acc, r| if r.iter()
+                .filter(|c| c > &&0_u8)
+                .collect::<Vec<&u8>>()
+                .len() == 0
+            {
                 acc + 1
             } else {
                 acc
-            }
-        }), 20);
+            }),
+            20
+        );
     }
 }

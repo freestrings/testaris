@@ -64,7 +64,6 @@ impl<'a> App<'a> {
         texture_creator: &'a TextureCreator<WindowContext>,
         worker_count: u8,
         tetris_per_worker: u32,
-
     ) -> App {
         let mut op_event = EventMgr::new();
         op_event.create(worker_count);
@@ -72,7 +71,9 @@ impl<'a> App<'a> {
 
         App {
             canvas: canvas,
-            texture: texture_creator.create_texture_target(None, WINDOW_WIDTH, WINDOW_HEIGHT).unwrap(),
+            texture: texture_creator
+                .create_texture_target(None, WINDOW_WIDTH, WINDOW_HEIGHT)
+                .unwrap(),
             events: events,
             worker_count: worker_count,
             tetris_per_worker: tetris_per_worker,
@@ -82,7 +83,8 @@ impl<'a> App<'a> {
     }
 
     fn handle_events(&mut self) {
-        let events: Vec<tc::BlockEvent> = self.events.poll_iter()
+        let events: Vec<tc::BlockEvent> = self.events
+            .poll_iter()
             .map(|event| match event {
                 Event::KeyDown { keycode: Some(Keycode::Up), .. } => tc::BlockEvent::Rotate,
                 Event::KeyDown { keycode: Some(Keycode::Left), .. } => tc::BlockEvent::Left,
@@ -96,7 +98,11 @@ impl<'a> App<'a> {
 
         for worker_index in 0..self.worker_count {
             for tetris_index in 0..self.tetris_per_worker {
-                self.op_event.send_app_event(tc::AppEvent::User(worker_index, tetris_index, Some(events.clone())));
+                self.op_event.send_app_event(tc::AppEvent::User(
+                    worker_index,
+                    tetris_index,
+                    Some(events.clone()),
+                ));
             }
         }
 
@@ -105,14 +111,20 @@ impl<'a> App<'a> {
     fn check_gravity(&mut self) {
         for worker_index in 0..self.worker_count {
             for tetris_index in 0..self.tetris_per_worker {
-                self.op_event.send_app_event(tc::AppEvent::Tick(worker_index, tetris_index));
+                self.op_event.send_app_event(
+                    tc::AppEvent::Tick(worker_index, tetris_index),
+                );
             }
         }
     }
 
     fn handle_messages(&mut self) {
         for message in self.op_event.received() {
-            self.painter.paint(&message, &mut self.canvas, &mut self.texture);
+            self.painter.paint(
+                &message,
+                &mut self.canvas,
+                &mut self.texture,
+            );
         }
     }
 
@@ -177,7 +189,9 @@ impl Painter {
     fn paint_main(&self, message: &tc::Msg, canvas: &mut Canvas<Window>) {
         if let Some(ref block) = message.block {
             let &(r, g, b) = block.color_ref();
-            let points: Vec<Point> = block.points_ref().iter()
+            let points: Vec<Point> = block
+                .points_ref()
+                .iter()
                 .map(|point| self.as_point(point.x(), point.y()))
                 .collect();
 
@@ -190,14 +204,22 @@ impl Painter {
         if let Some(ref block) = message.block {
             if let &Some(ref next) = block.next_ref() {
                 let &(r, g, b) = next.color_ref();
-                let points: Vec<Point> = next.points_ref().iter()
+                let points: Vec<Point> = next.points_ref()
+                    .iter()
                     .map(|point| {
                         Point::new(point.x() + 3 + MAIN_WIDTH as i32, point.y() + 2)
                     })
                     .collect();
 
                 canvas.set_draw_color(Color::RGB(10, 10, 10));
-                canvas.fill_rect(Rect::new(MAIN_WIDTH as i32, 0, WINDOW_WIDTH - MAIN_WIDTH, WINDOW_HEIGHT)).unwrap();
+                canvas
+                    .fill_rect(Rect::new(
+                        MAIN_WIDTH as i32,
+                        0,
+                        WINDOW_WIDTH - MAIN_WIDTH,
+                        WINDOW_HEIGHT,
+                    ))
+                    .unwrap();
 
                 canvas.set_draw_color(Color::RGB(r, g, b));
                 canvas.draw_points(points.as_slice()).unwrap();
@@ -217,21 +239,25 @@ impl Painter {
 
                     let (r, g, b) = tc::BlockType::new(piece).color();
                     canvas.set_draw_color(Color::RGB(r, g, b));
-                    canvas.draw_point(self.as_point(c_index as i32, r_index as i32)).unwrap();
+                    canvas
+                        .draw_point(self.as_point(c_index as i32, r_index as i32))
+                        .unwrap();
                 }
             }
         }
     }
 
     fn paint(&self, message: &tc::Msg, canvas: &mut Canvas<Window>, texture: &mut Texture) {
-        canvas.with_texture_canvas(texture, |texture_canvas| {
-            texture_canvas.set_draw_color(Color::RGB(0, 0, 0));
-            texture_canvas.clear();
+        canvas
+            .with_texture_canvas(texture, |texture_canvas| {
+                texture_canvas.set_draw_color(Color::RGB(0, 0, 0));
+                texture_canvas.clear();
 
-            self.paint_main(message, texture_canvas);
-            self.paint_scoreboard(message, texture_canvas);
-            self.paint_grid(message, texture_canvas);
-        }).unwrap();
+                self.paint_main(message, texture_canvas);
+                self.paint_scoreboard(message, texture_canvas);
+                self.paint_grid(message, texture_canvas);
+            })
+            .unwrap();
 
         match message.event {
             tc::AppEvent::InitTetris(worker_index, tetris_index) |
@@ -239,16 +265,20 @@ impl Painter {
             tc::AppEvent::User(worker_index, tetris_index, _) => {
                 let index = (worker_index as u32 * TETRIS_COUNT + tetris_index) as usize;
                 let start = &self.starts[index];
-                canvas.copy(texture,
-                            Some(Rect::new(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT)),
-                            Some(Rect::new(
-                                start.x(),
-                                start.y(),
-                                WINDOW_WIDTH * self.scale as u32,
-                                WINDOW_HEIGHT * self.scale as u32
-                            ))).unwrap();
+                canvas
+                    .copy(
+                        texture,
+                        Some(Rect::new(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT)),
+                        Some(Rect::new(
+                            start.x(),
+                            start.y(),
+                            WINDOW_WIDTH * self.scale as u32,
+                            WINDOW_HEIGHT * self.scale as u32,
+                        )),
+                    )
+                    .unwrap();
             }
-            _ => ()
+            _ => (),
         }
     }
 }
