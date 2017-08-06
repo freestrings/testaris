@@ -161,14 +161,14 @@ impl Painter {
     }
 
     fn paint_border(&self, canvas: &mut Canvas<Window>) {
-        canvas.set_draw_color(Color::RGB(100, 100, 100));
+        canvas.set_draw_color(Color::RGB(25, 25, 25));
         canvas
             .fill_rect(Rect::new(0, 0, MAIN_WIDTH, WINDOW_HEIGHT))
             .unwrap();
     }
 
     fn paint_main(&self, message: &tc::Msg, canvas: &mut Canvas<Window>) {
-        canvas.set_draw_color(Color::RGB(0, 100, 100));
+        canvas.set_draw_color(Color::RGB(75, 75, 75));
         canvas
             .fill_rect(Rect::new(1, 1, tc::COLUMNS as u32, tc::ROWS as u32))
             .unwrap();
@@ -198,7 +198,7 @@ impl Painter {
                     })
                     .collect();
 
-                canvas.set_draw_color(Color::RGB(10, 10, 10));
+                canvas.set_draw_color(Color::RGB(38, 38, 38));
                 canvas
                     .fill_rect(Rect::new(
                         MAIN_WIDTH as i32,
@@ -215,6 +215,7 @@ impl Painter {
     }
 
     fn paint_grid(&self, message: &tc::Msg, canvas: &mut Canvas<Window>) {
+
         if let Some(ref grid) = message.grid {
             let data = grid.get_data();
             for r_index in 0..data.len() {
@@ -224,7 +225,12 @@ impl Painter {
                         continue;
                     }
 
-                    let (r, g, b) = tc::BlockType::new(piece).color();
+                    let (r, g, b) = if let Some(ref scheme) = message.scheme {
+                        scheme.color(&tc::BlockType::new(piece))
+                    } else {
+                        (255, 255, 255)
+                    };
+
                     canvas.set_draw_color(Color::RGB(r, g, b));
                     canvas
                         .draw_point(self._as_point(c_index as i32, r_index as i32))
@@ -237,7 +243,7 @@ impl Painter {
     fn paint(&self, message: &tc::Msg, canvas: &mut Canvas<Window>, texture: &mut Texture) {
         canvas
             .with_texture_canvas(texture, |texture_canvas| {
-                texture_canvas.set_draw_color(Color::RGB(0, 0, 0));
+                texture_canvas.set_draw_color(Color::RGB(38, 38, 38));
                 texture_canvas.clear();
 
                 self.paint_border(texture_canvas);

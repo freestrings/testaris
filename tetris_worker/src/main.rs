@@ -81,7 +81,7 @@ mod wasm32 {
         }
 
         let event = AppEvent::InitWorker(worker_index, tetris_count);
-        send_back(Msg::new(event, None, None));
+        send_back(Msg::new(event, None, None, None));
     }
 
     fn init_tetris(worker_index: u8, tetris_index: u32) {
@@ -96,6 +96,7 @@ mod wasm32 {
             AppEvent::InitTetris(worker_index, tetris_index),
             Some(tetris.get_block()),
             None,
+            Some(tetris.scheme.clone()),
         ));
     }
 
@@ -111,6 +112,7 @@ mod wasm32 {
             AppEvent::Tick(worker_index, tetris_index),
             Some(tetris.get_block()),
             Some(tetris.get_grid()),
+            Some(tetris.scheme.clone()),
         ));
     }
 
@@ -126,6 +128,7 @@ mod wasm32 {
             AppEvent::User(worker_index, tetris_index, None),
             Some(tetris.get_block()),
             Some(tetris.get_grid()),
+            Some(tetris.scheme.clone()),
         ));
     }
 

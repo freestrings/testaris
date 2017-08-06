@@ -39,16 +39,94 @@ pub const BLOCK_I: &[(u8, u8)] = &[(0, 0), (1, 0), (2, 0), (3, 0)];
 pub const COLUMNS: usize = 10;
 pub const ROWS: usize = 20;
 
-pub const COLOR_PURPLE: (u8, u8, u8) = (128, 0, 128);
-pub const COLOR_BLUE: (u8, u8, u8) = (0, 0, 255);
-pub const COLOR_ORANGE: (u8, u8, u8) = (255, 165, 0);
-pub const COLOR_LIME: (u8, u8, u8) = (128, 255, 0);
-pub const COLOR_RED: (u8, u8, u8) = (255, 0, 0);
-pub const COLOR_YELLOW: (u8, u8, u8) = (255, 255, 0);
-pub const COLOR_CYAN: (u8, u8, u8) = (0, 255, 255);
-pub const COLOR_BLACK: (u8, u8, u8) = (0, 0, 0);
-
 pub const DEFAULT_GRAVITY: u8 = 20;
+
+pub const SCHEME_1: [(u8, u8, u8); 7] = [
+    (20, 166, 151),
+    (242, 193, 46),
+    (242, 157, 53),
+    (242, 118, 73),
+    (242, 82, 82),
+    (247, 242, 178),
+    (173, 207, 79),
+];
+
+pub const SCHEME_2: [(u8, u8, u8); 7] = [
+    (127, 22, 55),
+    (4, 120, 120),
+    (255, 183, 51),
+    (245, 115, 54),
+    (194, 33, 33),
+    (90, 31, 0),
+    (253, 231, 146),
+];
+
+pub const SCHEME_3: [(u8, u8, u8); 7] = [
+    (219, 88, 0),
+    (255, 144, 0),
+    (240, 198, 0),
+    (142, 161, 6),
+    (89, 99, 30),
+    (155, 191, 171),
+    (242, 239, 223),
+];
+
+pub const SCHEME_4: [(u8, u8, u8); 7] = [
+    (89, 117, 51),
+    (51, 47, 40),
+    (97, 181, 148),
+    (229, 222, 165),
+    (196, 78, 24),
+    (0, 42, 74),
+    (23, 96, 125),
+];
+
+pub const SCHEME_5: [(u8, u8, u8); 7] = [
+    (255, 255, 255),
+    (174, 174, 174),
+    (230, 76, 102),
+    (45, 62, 80),
+    (27, 188, 155),
+    (19, 20, 15),
+    (212, 255, 0),
+];
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Scheme {
+    Type1,
+    Type2,
+    Type3,
+    Type4,
+    Type5,
+}
+
+impl Scheme {
+    fn new() -> Scheme {
+        let mut rng = rand::thread_rng();
+        let between = Range::new(1, 5);
+
+        match between.ind_sample(&mut rng) {
+            1 => Scheme::Type1,
+            2 => Scheme::Type2,
+            3 => Scheme::Type3,
+            4 => Scheme::Type4,
+            5 => Scheme::Type5,
+            _ => Scheme::Type1,
+        }
+    }
+
+    pub fn color(&self, block_type: &BlockType) -> (u8, u8, u8) {
+        let scheme = match *self {
+            Scheme::Type1 => SCHEME_1,
+            Scheme::Type2 => SCHEME_2,
+            Scheme::Type3 => SCHEME_3,
+            Scheme::Type4 => SCHEME_4,
+            Scheme::Type5 => SCHEME_5,
+        };
+
+        scheme[(block_type.index() - 1) as usize]
+    }
+}
 
 pub struct Ticker {
     fact: u32,
@@ -79,14 +157,18 @@ pub struct Tetris {
     pub block: Block,
     pub grid: Grid,
     pub ticker: Ticker,
+    pub scheme: Scheme,
 }
 
 impl Tetris {
     pub fn new() -> Tetris {
+        let scheme = Scheme::new();
+
         Tetris {
-            block: Block::new(BlockType::random()),
+            block: Block::new(BlockType::random(), &scheme),
             grid: Grid::new(),
             ticker: Ticker::new(10),
+            scheme: scheme,
         }
     }
 
@@ -94,7 +176,7 @@ impl Tetris {
         self.block.align_to_start();
 
         if self.block.next_ref().is_none() {
-            self.block.load_next();
+            self.block.load_next(&self.scheme);
         }
     }
 
@@ -110,7 +192,7 @@ impl Tetris {
         if !grid.is_empty_below(block.points_ref()) {
             grid.fill(&block);
             grid.erase_full_row(&block);
-            block.apply_next();
+            block.apply_next(&self.scheme);
         }
     }
 
@@ -166,9 +248,9 @@ pub struct Block {
 }
 
 impl Block {
-    pub fn new(block_type: BlockType) -> Block {
+    pub fn new(block_type: BlockType, scheme: &Scheme) -> Block {
         let points = block_type.points();
-        let color = block_type.color();
+        let color = scheme.color(&block_type);
 
         Block {
             block_type: block_type,
@@ -178,17 +260,17 @@ impl Block {
         }
     }
 
-    pub fn load_next(&mut self) {
-        self.next = Some(Box::new(Block::new(BlockType::random())));
+    pub fn load_next(&mut self, scheme: &Scheme) {
+        self.next = Some(Box::new(Block::new(BlockType::random(), scheme)));
     }
 
-    pub fn apply_next(&mut self) {
+    pub fn apply_next(&mut self, scheme: &Scheme) {
         let mut block = self.next.take().expect("Can not apply a next block!");
         self.block_type = block.block_type.clone();
         self.color = block.color;
         self.update(block.points_ref_mut());
         self.align_to_start();
-        self.load_next();
+        self.load_next(scheme);
     }
 
     pub fn align_to_start(&mut self) {
@@ -497,15 +579,15 @@ impl BlockType {
         }
     }
 
-    pub fn color(&self) -> (u8, u8, u8) {
+    pub fn color(&self, scheme: &[(u8, u8, u8); 7]) -> (u8, u8, u8) {
         match *self {
-            BlockType::T => COLOR_PURPLE,
-            BlockType::J => COLOR_BLUE,
-            BlockType::L => COLOR_ORANGE,
-            BlockType::S => COLOR_LIME,
-            BlockType::Z => COLOR_RED,
-            BlockType::O => COLOR_YELLOW,
-            BlockType::I => COLOR_CYAN,
+            BlockType::T => scheme[0],
+            BlockType::J => scheme[1],
+            BlockType::L => scheme[2],
+            BlockType::S => scheme[3],
+            BlockType::Z => scheme[4],
+            BlockType::O => scheme[5],
+            BlockType::I => scheme[6],
         }
     }
 
@@ -573,14 +655,21 @@ pub struct Msg {
     pub event: AppEvent,
     pub block: Option<Block>,
     pub grid: Option<Grid>,
+    pub scheme: Option<Scheme>,
 }
 
 impl Msg {
-    pub fn new(event: AppEvent, block: Option<Block>, grid: Option<Grid>) -> Msg {
+    pub fn new(
+        event: AppEvent,
+        block: Option<Block>,
+        grid: Option<Grid>,
+        scheme: Option<Scheme>,
+    ) -> Msg {
         Msg {
             event: event,
             block: block,
             grid: grid,
+            scheme: scheme,
         }
     }
 
