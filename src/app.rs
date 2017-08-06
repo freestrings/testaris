@@ -21,32 +21,6 @@ pub const TARGET_RENDER_HEIGHT: u32 = 440;
 pub const WORKER_COUNT: u8 = 1;
 pub const TETRIS_COUNT: u32 = 4; // (4 as u32).pow(4) / WORKER_COUNT;
 
-//const WORKER_COUNT: u8 = 2;
-//const TETRIS_COUNT: u32 = 32; // (4 as u32).pow(4) / WORKER_COUNT;
-
-//const WORKER_COUNT: u8 = 1;
-//const TETRIS_COUNT: u32 = 64; // (4 as u32).pow(4) / WORKER_COUNT;
-
-//const WORKER_COUNT: u8 = 2;
-//const TETRIS_COUNT: u32 = 128; // (4 as u32).pow(4) / WORKER_COUNT;
-
-//lazy_static! {
-//    static ref EVENT_Q: Mutex<Vec<tc::BlockEvent>> = Mutex::new(vec![]);
-//}
-
-//
-// cwrap('move_rotate', 'number')();
-//#[no_mangle]
-//pub fn move_rotate() -> u8 {
-//    match EVENT_Q.lock() {
-//        Ok(mut v) => {
-//            v.push(tc::BlockEvent::Rotate);
-//            0
-//        }
-//        Err(_) => 1,
-//    }
-//}
-
 pub struct App<'a> {
     canvas: Canvas<Window>,
     texture: Texture<'a>,
@@ -182,17 +156,30 @@ impl Painter {
         }
     }
 
-    fn as_point(&self, x: i32, y: i32) -> Point {
-        Point::new(x + BORDER as i32, y)
+    fn _as_point(&self, x: i32, y: i32) -> Point {
+        Point::new(x + BORDER as i32, y + BORDER as i32)
+    }
+
+    fn paint_border(&self, canvas: &mut Canvas<Window>) {
+        canvas.set_draw_color(Color::RGB(100, 100, 100));
+        canvas
+            .fill_rect(Rect::new(0, 0, MAIN_WIDTH, WINDOW_HEIGHT))
+            .unwrap();
     }
 
     fn paint_main(&self, message: &tc::Msg, canvas: &mut Canvas<Window>) {
+        canvas.set_draw_color(Color::RGB(0, 100, 100));
+        canvas
+            .fill_rect(Rect::new(1, 1, tc::COLUMNS as u32, tc::ROWS as u32))
+            .unwrap();
+
         if let Some(ref block) = message.block {
             let &(r, g, b) = block.color_ref();
             let points: Vec<Point> = block
                 .points_ref()
                 .iter()
-                .map(|point| self.as_point(point.x(), point.y()))
+                .filter(|point| point.y() >= 0)
+                .map(|point| self._as_point(point.x(), point.y()))
                 .collect();
 
             canvas.set_draw_color(Color::RGB(r, g, b));
@@ -240,7 +227,7 @@ impl Painter {
                     let (r, g, b) = tc::BlockType::new(piece).color();
                     canvas.set_draw_color(Color::RGB(r, g, b));
                     canvas
-                        .draw_point(self.as_point(c_index as i32, r_index as i32))
+                        .draw_point(self._as_point(c_index as i32, r_index as i32))
                         .unwrap();
                 }
             }
@@ -253,9 +240,10 @@ impl Painter {
                 texture_canvas.set_draw_color(Color::RGB(0, 0, 0));
                 texture_canvas.clear();
 
+                self.paint_border(texture_canvas);
                 self.paint_main(message, texture_canvas);
-                self.paint_scoreboard(message, texture_canvas);
                 self.paint_grid(message, texture_canvas);
+                self.paint_scoreboard(message, texture_canvas);
             })
             .unwrap();
 

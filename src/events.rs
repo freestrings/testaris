@@ -21,6 +21,9 @@ pub struct EventMgr<T> {
 }
 
 #[cfg(target_arch = "wasm32")]
+pub use self::wasm32::move_rotate;
+
+#[cfg(target_arch = "wasm32")]
 mod wasm32 {
     use super::*;
 
@@ -114,6 +117,19 @@ mod wasm32 {
         }
     }
 
+
+    // cwrap('move_rotate', 'number')();
+    #[no_mangle]
+    pub fn move_rotate() -> u8 {
+        match EVENT_Q.lock() {
+            Ok(mut v) => {
+                v.push(tc::BlockEvent::Rotate);
+                0
+            }
+            Err(_) => 1,
+        }
+    }
+
     pub fn event_loop(mut app: Box<app::App>) {
         let app_ptr = &mut *app as *mut app::App as *mut c_void;
         unsafe {
@@ -121,7 +137,6 @@ mod wasm32 {
         }
         mem::forget(app);
     }
-
 }
 
 pub fn event_loop(app: Box<app::App>) {
