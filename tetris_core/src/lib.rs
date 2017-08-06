@@ -109,6 +109,7 @@ impl Tetris {
 
         if !grid.is_empty_below(block.points_ref()) {
             grid.fill(&block);
+            grid.erase_full_row(&block);
             block.apply_next();
         }
     }
@@ -139,8 +140,10 @@ impl Tetris {
 
             if !grid.is_empty_below(block.points_ref()) {
                 grid.fill(block);
+                grid.erase_full_row(block);
                 break;
             }
+
             block.adjust_bound();
         }
     }
@@ -153,6 +156,303 @@ impl Tetris {
         self.grid.clone()
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Block {
+    block_type: BlockType,
+    color: Color,
+    points: Points,
+    next: Option<Box<Block>>,
+}
+
+impl Block {
+    pub fn new(block_type: BlockType) -> Block {
+        let points = block_type.points();
+        let color = block_type.color();
+
+        Block {
+            block_type: block_type,
+            points: points,
+            color: color,
+            next: None,
+        }
+    }
+
+    pub fn load_next(&mut self) {
+        self.next = Some(Box::new(Block::new(BlockType::random())));
+    }
+
+    pub fn apply_next(&mut self) {
+        let mut block = self.next.take().expect("Can not apply a next block!");
+        self.block_type = block.block_type.clone();
+        self.color = block.color;
+        self.update(block.points_ref_mut());
+        self.align_to_start();
+        self.load_next();
+    }
+
+    pub fn align_to_start(&mut self) {
+        let range = self.range();
+        let x = (COLUMNS / 2 - range.width() / 2) as i32;
+        let y = range.height() as i32 * -1;
+        self.shift(|| (x, y));
+    }
+
+    pub fn next_ref(&self) -> &Option<Box<Block>> {
+        &self.next
+    }
+
+    pub fn next_type(&self) -> Option<BlockType> {
+        if let Some(ref next) = self.next {
+            Some(next.type_ref().clone())
+        } else {
+            None
+        }
+    }
+
+    pub fn type_ref(&self) -> &BlockType {
+        &self.block_type
+    }
+
+    pub fn color_ref(&self) -> &Color {
+        &self.color
+    }
+
+    pub fn points_ref(&self) -> &Points {
+        &self.points
+    }
+
+    pub fn points_ref_mut(&mut self) -> &mut Points {
+        &mut self.points
+    }
+
+    pub fn points(&self) -> Points {
+        self.points.clone()
+    }
+
+    pub fn update(&mut self, target_points: &mut Points) {
+        self.points.truncate(0);
+        self.points.append(target_points);
+    }
+
+    //
+    // https://www.youtube.com/watch?v=Atlr5vvdchY
+    //
+    pub fn rotate(&mut self) {
+        let angle = std::f32::consts::PI * 0.5_f32;
+        let center = Point::new(self.points_ref()[2].x(), self.points_ref()[2].y());
+        let mut points = self.points_ref()
+            .iter()
+            .map(|point| {
+                let x = point.x() - center.x();
+                let y = point.y() - center.y();
+                let y = y * -1;
+
+                let rotated_x = angle.cos() * x as f32 - angle.sin() * y as f32;
+                let rotated_x = rotated_x.round() as i32 + center.x();
+                let rotated_y = angle.sin() * x as f32 + angle.cos() * y as f32;
+                let rotated_y = rotated_y.round() as i32 * -1 + center.y();
+
+                Point::new(rotated_x, rotated_y)
+            })
+            .collect();
+
+        self.update(&mut points);
+    }
+
+    pub fn shift<F>(&mut self, mut f: F)
+    where
+        F: FnMut() -> (i32, i32),
+    {
+        let mut points = self.points_ref()
+            .iter()
+            .map(|point| {
+                let raw_point = f();
+                Point::new(point.x() + raw_point.0, point.y() + raw_point.1)
+            })
+            .collect();
+
+        self.update(&mut points);
+    }
+
+    pub fn left<GARD>(&mut self, rollback_gard: GARD)
+    where
+        GARD: Fn(&Points) -> bool,
+    {
+        self.shift(|| (-1, 0));
+        if rollback_gard(self.points_ref()) {
+            self.shift(|| (1, 0));
+        }
+    }
+
+    pub fn right<GARD>(&mut self, rollback_gard: GARD)
+    where
+        GARD: Fn(&Points) -> bool,
+    {
+        self.shift(|| (1, 0));
+        if rollback_gard(self.points_ref()) {
+            self.shift(|| (-1, 0));
+        }
+    }
+
+    pub fn down<GARD>(&mut self, rollback_gard: GARD)
+    where
+        GARD: Fn(&Points) -> bool,
+    {
+        self.shift(|| (0, 1));
+        if rollback_gard(self.points_ref()) {
+            self.shift(|| (0, -1));
+        }
+    }
+
+    pub fn drop<GARD>(&mut self, rollback_gard: GARD)
+    where
+        GARD: Fn(&Points) -> bool,
+    {
+        let range = self.range();
+        let start_y = range.y() + range.height() as i32;
+        for _ in start_y..ROWS as i32 {
+            self.shift(|| (0, 1));
+            if rollback_gard(self.points_ref()) {
+                self.shift(|| (0, -1));
+                break;
+            }
+        }
+    }
+
+    pub fn range(&self) -> Rect {
+        let mut min_x = i32::max_value();
+        let mut max_x = i32::min_value();
+        let mut min_y = i32::max_value();
+        let mut max_y = i32::min_value();
+
+        let points = self.points_ref();
+        for b in points {
+            if b.x().gt(&max_x) {
+                max_x = b.x();
+            }
+            if b.x().lt(&min_x) {
+                min_x = b.x();
+            }
+            if b.y().gt(&max_y) {
+                max_y = b.y();
+            }
+            if b.y().lt(&min_y) {
+                min_y = b.y();
+            }
+        }
+
+        let width = (max_x - min_x).abs() as usize + 1;
+        let height = (max_y - min_y).abs() as usize + 1;
+        Rect::new(min_x, min_y, width, height)
+    }
+
+    pub fn adjust_bound(&mut self) {
+        let range = self.range();
+        self._adjust_left_bound(&range);
+        self._adjust_right_bound(&range);
+        self._adjust_bottom_bound(&range);
+    }
+
+    fn _adjust_left_bound(&mut self, range: &Rect) {
+        if range.x() < 0 {
+            self.shift(|| (range.x().abs(), 0));
+        }
+    }
+
+    fn _adjust_right_bound(&mut self, range: &Rect) {
+        let right = range.x() + range.width() as i32;
+        if right >= COLUMNS as i32 {
+            self.shift(|| (COLUMNS as i32 - right, 0));
+        }
+    }
+
+    fn _adjust_bottom_bound(&mut self, range: &Rect) {
+        let bottom = range.y() + range.height() as i32;
+        if bottom >= ROWS as i32 {
+            self.shift(|| (0, ROWS as i32 - bottom));
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Grid {
+    data: Vec<Vec<u8>>,
+}
+
+impl Grid {
+    pub fn new() -> Grid {
+        Grid { data: vec![vec![0_u8; COLUMNS]; ROWS] }
+    }
+
+    pub fn get_data(&self) -> &Vec<Vec<u8>> {
+        &self.data
+    }
+
+    fn _check_index_range(&self, point: &Point) -> bool {
+        point.y() >= 0 && point.y() < ROWS as i32 && point.x() >= 0 && point.x() < COLUMNS as i32
+    }
+
+    pub fn fill(&mut self, block: &Block) {
+        for point in block.points_ref() {
+            if self._check_index_range(point) {
+                self.data[point.y() as usize][point.x() as usize] = block.block_type.index();
+            }
+        }
+    }
+
+    pub fn is_empty_below(&self, points: &Points) -> bool {
+        for point in points {
+            if point.y() + 1 == ROWS as i32 {
+                return false;
+            }
+
+            if self._check_index_range(point) && point.y() + 1 < ROWS as i32 &&
+                self.data[point.y() as usize + 1][point.x() as usize] > 0
+            {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn is_empty(&self, points: &Points) -> bool {
+        points
+            .iter()
+            .filter(|point| self._check_index_range(point))
+            .filter(|point| {
+                self.data[point.y() as usize][point.x() as usize] > 0
+            })
+            .collect::<Vec<&Point>>()
+            .len() == 0
+    }
+
+    fn _is_full(&self, r_index: usize) -> bool {
+        !self.data[r_index].contains(&0)
+    }
+
+    pub fn remove_row(&mut self, r_index: usize) {
+        self.data.remove(r_index);
+        self.data.insert(0, vec![0_u8; COLUMNS]);
+    }
+
+    pub fn erase_full_row(&mut self, block: &Block) {
+        let range = block.range();
+
+        for r in range.y()..range.y() + range.height() as i32 {
+            if r < 0 || r >= ROWS as i32 {
+                continue;
+            }
+
+            let r_index = r as usize;
+
+            if self._is_full(r_index) {
+                self.remove_row(r_index);
+            }
+        }
+    }
+}
+
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum BlockType {
@@ -344,288 +644,6 @@ impl Rect {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Block {
-    block_type: BlockType,
-    color: Color,
-    points: Points,
-    next: Option<Box<Block>>,
-}
-
-impl Block {
-    pub fn new(block_type: BlockType) -> Block {
-        let points = block_type.points();
-        let color = block_type.color();
-
-        Block {
-            block_type: block_type,
-            points: points,
-            color: color,
-            next: None,
-        }
-    }
-
-    pub fn load_next(&mut self) {
-        self.next = Some(Box::new(Block::new(BlockType::random())));
-    }
-
-    pub fn apply_next(&mut self) {
-        let mut block = self.next.take().expect("Can not apply a next block!");
-        self.block_type = block.block_type.clone();
-        self.color = block.color;
-        self.update(block.points_ref_mut());
-        self.align_to_start();
-        self.load_next();
-    }
-
-    pub fn align_to_start(&mut self) {
-        let range = self.range();
-        let x = (COLUMNS / 2 - range.width() / 2) as i32;
-        let y = range.height() as i32 * -1;
-        self.shift(|| (x, y));
-    }
-
-    pub fn next_ref(&self) -> &Option<Box<Block>> {
-        &self.next
-    }
-
-    pub fn next_type(&self) -> Option<BlockType> {
-        if let Some(ref next) = self.next {
-            Some(next.type_ref().clone())
-        } else {
-            None
-        }
-    }
-
-    pub fn type_ref(&self) -> &BlockType {
-        &self.block_type
-    }
-
-    pub fn color_ref(&self) -> &Color {
-        &self.color
-    }
-
-    pub fn points_ref(&self) -> &Points {
-        &self.points
-    }
-
-    pub fn points_ref_mut(&mut self) -> &mut Points {
-        &mut self.points
-    }
-
-    pub fn points(&self) -> Points {
-        self.points.clone()
-    }
-
-    pub fn update(&mut self, target_points: &mut Points) {
-        self.points.truncate(0);
-        self.points.append(target_points);
-    }
-
-    //
-    // https://www.youtube.com/watch?v=Atlr5vvdchY
-    //
-    pub fn rotate(&mut self) {
-        let angle = std::f32::consts::PI * 0.5_f32;
-        let center = Point::new(self.points_ref()[2].x(), self.points_ref()[2].y());
-        let mut points = self.points_ref()
-            .iter()
-            .map(|point| {
-                let x = point.x() - center.x();
-                let y = point.y() - center.y();
-                let y = y * -1;
-
-                let rotated_x = angle.cos() * x as f32 - angle.sin() * y as f32;
-                let rotated_x = rotated_x.round() as i32 + center.x();
-                let rotated_y = angle.sin() * x as f32 + angle.cos() * y as f32;
-                let rotated_y = rotated_y.round() as i32 * -1 + center.y();
-
-                Point::new(rotated_x, rotated_y)
-            })
-            .collect();
-
-        self.update(&mut points);
-    }
-
-    pub fn shift<F>(&mut self, mut f: F)
-    where
-        F: FnMut() -> (i32, i32),
-    {
-        let mut points = self.points_ref()
-            .iter()
-            .map(|point| {
-                let raw_point = f();
-                Point::new(point.x() + raw_point.0, point.y() + raw_point.1)
-            })
-            .collect();
-
-        self.update(&mut points);
-    }
-
-    pub fn left<GARD>(&mut self, rollback_gard: GARD)
-    where
-        GARD: Fn(&Points) -> bool,
-    {
-        self.shift(|| (-1, 0));
-        if rollback_gard(self.points_ref()) {
-            self.shift(|| (1, 0));
-        }
-    }
-
-    pub fn right<GARD>(&mut self, rollback_gard: GARD)
-    where
-        GARD: Fn(&Points) -> bool,
-    {
-        self.shift(|| (1, 0));
-        if rollback_gard(self.points_ref()) {
-            self.shift(|| (-1, 0));
-        }
-    }
-
-    pub fn down<GARD>(&mut self, rollback_gard: GARD)
-    where
-        GARD: Fn(&Points) -> bool,
-    {
-        self.shift(|| (0, 1));
-        if rollback_gard(self.points_ref()) {
-            self.shift(|| (0, -1));
-        }
-    }
-
-    pub fn drop<GARD>(&mut self, rollback_gard: GARD)
-    where
-        GARD: Fn(&Points) -> bool,
-    {
-        let range = self.range();
-        let start_y = range.y() + range.height() as i32;
-        for _ in start_y..ROWS as i32 {
-            self.shift(|| (0, 1));
-            if rollback_gard(self.points_ref()) {
-                self.shift(|| (0, -1));
-                break;
-            }
-        }
-    }
-
-    pub fn range(&mut self) -> Rect {
-        let mut min_x = i32::max_value();
-        let mut max_x = i32::min_value();
-        let mut min_y = i32::max_value();
-        let mut max_y = i32::min_value();
-
-        let points = self.points_ref();
-        for b in points {
-            if b.x().gt(&max_x) {
-                max_x = b.x();
-            }
-            if b.x().lt(&min_x) {
-                min_x = b.x();
-            }
-            if b.y().gt(&max_y) {
-                max_y = b.y();
-            }
-            if b.y().lt(&min_y) {
-                min_y = b.y();
-            }
-        }
-
-        let width = (max_x - min_x).abs() as usize + 1;
-        let height = (max_y - min_y).abs() as usize + 1;
-        Rect::new(min_x, min_y, width, height)
-    }
-
-    pub fn adjust_bound(&mut self) {
-        let range = self.range();
-        self._adjust_left_bound(&range);
-        self._adjust_right_bound(&range);
-        self._adjust_bottom_bound(&range);
-    }
-
-    fn _adjust_left_bound(&mut self, range: &Rect) {
-        if range.x() < 0 {
-            self.shift(|| (range.x().abs(), 0));
-        }
-    }
-
-    fn _adjust_right_bound(&mut self, range: &Rect) {
-        let right = range.x() + range.width() as i32;
-        if right >= COLUMNS as i32 {
-            self.shift(|| (COLUMNS as i32 - right, 0));
-        }
-    }
-
-    fn _adjust_bottom_bound(&mut self, range: &Rect) {
-        let bottom = range.y() + range.height() as i32;
-        if bottom >= ROWS as i32 {
-            self.shift(|| (0, ROWS as i32 - bottom));
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Grid {
-    data: Vec<Vec<u8>>,
-}
-
-impl Grid {
-    pub fn new() -> Grid {
-        Grid { data: vec![vec![0_u8; COLUMNS]; ROWS] }
-    }
-
-    pub fn get_data(&self) -> &Vec<Vec<u8>> {
-        &self.data
-    }
-
-    fn _check_index_range(&self, point: &Point) -> bool {
-        point.y() >= 0 && point.y() < ROWS as i32 && point.x() >= 0 && point.x() < COLUMNS as i32
-    }
-
-    pub fn fill(&mut self, block: &Block) {
-        for point in block.points_ref() {
-            if self._check_index_range(point) {
-                self.data[point.y() as usize][point.x() as usize] = block.block_type.index();
-            }
-        }
-    }
-
-    pub fn is_empty_below(&self, points: &Points) -> bool {
-        for point in points {
-            if point.y() + 1 == ROWS as i32 {
-                return false;
-            }
-
-            if self._check_index_range(point) && point.y() + 1 < ROWS as i32 &&
-                self.data[point.y() as usize + 1][point.x() as usize] > 0
-            {
-                return false;
-            }
-        }
-        true
-    }
-
-    pub fn is_empty(&self, points: &Points) -> bool {
-        points
-            .iter()
-            .filter(|point| self._check_index_range(point))
-            .filter(|point| {
-                self.data[point.y() as usize][point.x() as usize] > 0
-            })
-            .collect::<Vec<&Point>>()
-            .len() == 0
-    }
-
-    pub fn is_full(&self, r_index: usize) -> bool {
-        !self.data[r_index].contains(&0)
-    }
-
-    pub fn remove_row(&mut self, r_index: usize) {
-        self.data.remove(r_index);
-        self.data.insert(0, vec![0_u8; COLUMNS]);
-    }
-}
-
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -665,4 +683,170 @@ mod tests {
             20
         );
     }
+
+    fn right(block: &mut Block, iter: i32) {
+        for _ in 0..iter {
+            block.right(|_| false);
+        }
+    }
+
+    fn left(block: &mut Block, iter: i32) {
+        for _ in 0..iter {
+            block.left(|_| false);
+        }
+    }
+
+    #[test]
+    fn grid_erase1() {
+        let mut grid = Grid::new();
+
+        let mut block = Block::new(BlockType::Z);
+        block.drop(|_| false);
+        grid.fill(&block);
+
+        let mut block = Block::new(BlockType::Z);
+        right(&mut block, 2);
+        block.drop(|_| false);
+        grid.fill(&block);
+
+        let mut block = Block::new(BlockType::Z);
+        right(&mut block, 4);
+        block.drop(|_| false);
+        grid.fill(&block);
+
+        let mut block = Block::new(BlockType::Z);
+        right(&mut block, 6);
+        block.drop(|_| false);
+        grid.fill(&block);
+
+        let mut block = Block::new(BlockType::T);
+        block.rotate();
+        right(&mut block, 8);
+        block.drop(|_| false);
+        grid.fill(&block);
+
+        let data = grid.get_data().clone();
+
+        assert_eq!(
+            data[17][0..10],
+            [0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 1_u8]
+        );
+        assert_eq!(
+            data[18][0..10],
+            [5_u8, 5_u8, 5_u8, 5_u8, 5_u8, 5_u8, 5_u8, 5_u8, 1_u8, 1_u8]
+        );
+        assert_eq!(
+            data[19][0..10],
+            [0_u8, 5_u8, 5_u8, 5_u8, 5_u8, 5_u8, 5_u8, 5_u8, 5_u8, 1_u8]
+        );
+
+        grid.erase_full_row(&block);
+
+        let data = grid.get_data();
+        assert_eq!(
+            data[18][0..10],
+            [0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 1_u8]
+        );
+        assert_eq!(
+            data[19][0..10],
+            [0_u8, 5_u8, 5_u8, 5_u8, 5_u8, 5_u8, 5_u8, 5_u8, 5_u8, 1_u8]
+        );
+
+    }
+
+    #[test]
+    fn grid_erase2() {
+        let mut grid = Grid::new();
+
+        let mut block = Block::new(BlockType::I);
+        block.drop(|p| !grid.is_empty(p));
+        grid.fill(&block);
+
+        let mut block = Block::new(BlockType::I);
+        right(&mut block, 4);
+        block.drop(|p| !grid.is_empty(p));
+        grid.fill(&block);
+
+        let mut block = Block::new(BlockType::I);
+        right(&mut block, 1);
+        block.drop(|p| !grid.is_empty(p));
+        grid.fill(&block);
+
+        let mut block = Block::new(BlockType::I);
+        right(&mut block, 5);
+        block.drop(|p| !grid.is_empty(p));
+        grid.fill(&block);
+
+        let mut block = Block::new(BlockType::I);
+        right(&mut block, 1);
+        block.drop(|p| !grid.is_empty(p));
+        grid.fill(&block);
+
+        let mut block = Block::new(BlockType::L);
+        right(&mut block, 6);
+        block.drop(|p| !grid.is_empty(p));
+        grid.fill(&block);
+
+        let mut block = Block::new(BlockType::I);
+        right(&mut block, 1);
+        block.drop(|p| !grid.is_empty(p));
+        grid.fill(&block);
+
+        let mut block = Block::new(BlockType::L);
+        right(&mut block, 5);
+        block.drop(|p| !grid.is_empty(p));
+        grid.fill(&block);
+
+        let mut block = Block::new(BlockType::I);
+        block.rotate();
+        right(&mut block, 7);
+        block.drop(|p| !grid.is_empty(p));
+        grid.fill(&block);
+
+        let mut block = Block::new(BlockType::I);
+        block.rotate();
+        left(&mut block, 2);
+        block.drop(|p| !grid.is_empty(p));
+        grid.fill(&block);
+
+        let data = grid.get_data().clone();
+        assert_eq!(
+            data[15][0..10],
+            [7_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 3_u8, 0_u8, 0_u8]
+        );
+        assert_eq!(
+            data[16][0..10],
+            [7_u8, 7_u8, 7_u8, 7_u8, 7_u8, 3_u8, 3_u8, 3_u8, 3_u8, 7_u8]
+        );
+        assert_eq!(
+            data[17][0..10],
+            [7_u8, 7_u8, 7_u8, 7_u8, 7_u8, 0_u8, 3_u8, 3_u8, 3_u8, 7_u8]
+        );
+        assert_eq!(
+            data[18][0..10],
+            [7_u8, 7_u8, 7_u8, 7_u8, 7_u8, 7_u8, 7_u8, 7_u8, 7_u8, 7_u8]
+        );
+        assert_eq!(
+            data[19][0..10],
+            [7_u8, 7_u8, 7_u8, 7_u8, 7_u8, 7_u8, 7_u8, 7_u8, 0_u8, 7_u8]
+        );
+
+        grid.erase_full_row(&block);
+
+        let data = grid.get_data().clone();
+        assert_eq!(
+            data[17][0..10],
+            [7_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 0_u8, 3_u8, 0_u8, 0_u8]
+        );
+        assert_eq!(
+            data[18][0..10],
+            [7_u8, 7_u8, 7_u8, 7_u8, 7_u8, 0_u8, 3_u8, 3_u8, 3_u8, 7_u8]
+        );
+        assert_eq!(
+            data[19][0..10],
+            [7_u8, 7_u8, 7_u8, 7_u8, 7_u8, 7_u8, 7_u8, 7_u8, 0_u8, 7_u8]
+        );
+
+    }
+
 }

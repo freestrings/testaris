@@ -32,6 +32,7 @@ fn main() {
         .build()
         .unwrap();
     let texture_creator: TextureCreator<WindowContext> = canvas.texture_creator();
+
     events::event_loop(Box::new(app::App::new(
         canvas,
         events,

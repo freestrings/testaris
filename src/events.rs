@@ -61,7 +61,7 @@ mod wasm32 {
         fn create(&mut self, worker_count: u8) {
             let mut worker_handles: Vec<c_int> = (0..worker_count)
                 .map(|_| {
-                    let resource = CString::new("tetriscore.js").unwrap();
+                    let resource = CString::new("tetrisworker.js").unwrap();
                     unsafe { asm::emscripten_create_worker(resource.as_ptr()) }
                 })
                 .collect();

@@ -2,5 +2,5 @@ mkdir -p ../target/www \
 && emcc "-s" "BUILD_AS_WORKER=1" \
 "-s" "ALLOW_MEMORY_GROWTH=1" \
 "-O2" \
-"-o" "../target/www/tetriscore.js" \
+"-o" "../target/www/tetrisworker.js" \
 $@
